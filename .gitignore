@@ -1,0 +1,44 @@
+# Raw data — too large for version control
+data/
+
+# Cache + checkpoint artefacts (rebuilt on rerun)
+outputs/_cache/
+outputs/_gf_checkpoints/
+
+# Parquet outputs and the cache manifest ARE tracked — they are the ground truth
+# for "git pull and run" reproducibility per CLAUDE.md §5. Do not blanket-ignore
+# outputs/ or *.parquet here.
+
+# Submission bundle (rebuilt on demand)
+submission/*.zip
+
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.eggs/
+build/
+dist/
+.venv/
+venv/
+.python-version
+
+# Test + coverage
+.pytest_cache/
+.coverage
+
+# Jupyter
+.ipynb_checkpoints/
+
+# IDE / editor / OS junk
+.vscode/
+.idea/
+.DS_Store
+.Rhistory
+
+# Local env overrides
+.env
+.env.local
+
+# Claude Code per-user local permissions
+.claude/settings.local.json

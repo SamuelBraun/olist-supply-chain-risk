@@ -1,0 +1,58 @@
+{\rtf1\ansi\ansicpg1252\cocoartf2759
+\cocoatextscaling0\cocoaplatform0{\fonttbl\f0\froman\fcharset0 Times-Bold;\f1\froman\fcharset0 Times-Roman;\f2\fmodern\fcharset0 Courier;
+}
+{\colortbl;\red255\green255\blue255;\red0\green0\blue0;\red109\green109\blue109;}
+{\*\expandedcolortbl;;\cssrgb\c0\c0\c0;\cssrgb\c50196\c50196\c50196;}
+\paperw11900\paperh16840\margl1440\margr1440\vieww29200\viewh18400\viewkind0
+\deftab720
+\pard\pardeftab720\sa298\partightenfactor0
+
+\f0\b\fs36 \cf0 \expnd0\expndtw0\kerning0
+\outl0\strokewidth0 \strokec2 Project Outline \'97 Olist Supply Chain Risk Intelligence\
+\pard\pardeftab720\sa280\partightenfactor0
+
+\fs28 \cf0 The scenario\
+\pard\pardeftab720\sa240\partightenfactor0
+
+\f1\b0\fs24 \cf0 BigDataCompany is consulting for an e-commerce retail client built on the Olist Brazilian marketplace. The client's core problem is simple: they cannot see a supply chain failure coming until it has already happened and customers are already complaining. The goal of this project is to build a data-driven early warning system using PySpark that identifies which sellers are about to become a risk, in which regions, and how soon \'97 before a single customer is affected.\
+\pard\pardeftab720\partightenfactor0
+\cf3 \strokec3 \
+\pard\pardeftab720\sa280\partightenfactor0
+
+\f0\b\fs28 \cf0 \strokec2 The dataset\
+\pard\pardeftab720\sa240\partightenfactor0
+
+\fs24 \cf0 Brazilian E-Commerce Public Dataset by Olist
+\f1\b0  \'97 free on Kaggle at 
+\f2\fs26 kaggle.com/datasets/olistbr/brazilian-ecommerce
+\f1\fs24 \
+Real commercial data covering 100,000 orders placed across Brazil between 2016 and 2018. It comes as nine interconnected CSV tables covering orders, customers, sellers, products, reviews, payments and geolocation. Everything connects through a shared order ID.\
+\pard\pardeftab720\partightenfactor0
+\cf3 \strokec3 \
+\pard\pardeftab720\sa280\partightenfactor0
+
+\f0\b\fs28 \cf0 \strokec2 The three business questions\
+\pard\pardeftab720\sa240\partightenfactor0
+
+\f1\b0\fs24 \cf0 The project is structured around one central problem answered from three different angles, one per notebook:\
+\pard\pardeftab720\sa240\partightenfactor0
+
+\f0\b \cf0 Notebook 1 \'97 "When and where will demand spike, and which sellers are already struggling to keep up?"
+\f1\b0  Uses the order and seller transaction history as a time series to forecast future demand by region and flag sellers with a history of late deliveries.\
+
+\f0\b Notebook 2 \'97 "What are customers saying, and can we detect a seller in trouble before it shows up in sales?"
+\f1\b0  Uses the free-text customer reviews to track sentiment trends per seller over time and test whether a falling review score predicts a sales drop before it happens.\
+
+\f0\b Notebook 3 \'97 "Which sellers are critical single points of failure in the supply network?"
+\f1\b0  Models the entire seller-to-customer network as a graph to identify which sellers are so central, or so geographically isolated, that losing them would leave entire regions without coverage.\
+\pard\pardeftab720\partightenfactor0
+\cf3 \strokec3 \
+\pard\pardeftab720\sa280\partightenfactor0
+
+\f0\b\fs28 \cf0 \strokec2 How the three analyses connect\
+\pard\pardeftab720\sa240\partightenfactor0
+
+\f1\b0\fs24 \cf0 Each notebook produces a score per seller. At the end, these three scores are joined together into a single 
+\f0\b Seller Risk Index
+\f1\b0  \'97 a ranked list of every seller showing how much demand pressure they are facing, how their customer sentiment is trending, and how replaceable they are in the network. This unified output is the consulting deliverable: a prioritised list of sellers that need intervention, with the reason why, before the problem reaches the customer.\
+}
