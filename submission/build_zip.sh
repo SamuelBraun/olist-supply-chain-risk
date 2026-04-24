@@ -1,6 +1,8 @@
 #!/usr/bin/env bash
-# Re-execute all three notebooks in place, then zip notebooks + the
-# presentation PDF into a single Moodle-ready submission file.
+# Re-execute all four notebooks in place (00_main first, then the three
+# thematic deep-dives), assert every code cell has non-empty outputs,
+# then zip notebooks + the presentation PDF into a single Moodle-ready
+# submission file.
 #
 # Usage: bash submission/build_zip.sh [GROUP_NUMBER]
 #   GROUP_NUMBER defaults to "X" — pass your Moodle group number.
@@ -27,6 +29,7 @@ else
 fi
 
 NOTEBOOKS=(
+    "notebooks/00_main.ipynb"
     "notebooks/01_demand_forecasting.ipynb"
     "notebooks/02_sentiment_analysis.ipynb"
     "notebooks/03_supply_network_graph.ipynb"
@@ -50,7 +53,12 @@ done
 # GraphFrames leaves a checkpoint dir inside outputs/ — not part of the deliverable.
 rm -rf "$ROOT_DIR/outputs/_gf_checkpoints"
 
-# 3. Build the zip — only the graded artefacts
+# 3. Assert every code cell has non-empty, non-error outputs. The brief
+#    rejects notebooks without outputs outright.
+"$ROOT_DIR/.venv/bin/python" "$ROOT_DIR/scripts/assert_notebook_outputs.py" \
+    "${NOTEBOOKS[@]}"
+
+# 4. Build the zip — only the graded artefacts
 rm -f "$ZIP_PATH"
 zip -j "$ZIP_PATH" "${NOTEBOOKS[@]}" "$PRESENTATION"
 
