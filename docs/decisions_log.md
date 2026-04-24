@@ -57,6 +57,11 @@ Append-only record of autonomous choices made during the build. Used as the sour
 **Why:** Reduces interactive churn for the long rerun-heavy commits 6–9 (three thematic notebooks + the main notebook, each of which takes several minutes to execute).
 **Impact:** All subsequent decisions in this block are auto-recorded here; commits proceed without stopping for confirmation unless a stop condition is hit.
 
+### 2026-04-24 — viz module added; 12 pure helpers (viz commit A)
+**Choice:** Added `src/olist/viz.py` (~330 LOC, 12 pure-function helpers). Each takes a small pandas DataFrame and returns a `matplotlib.Figure` or `pandas.Styler`. No Spark, no I/O, no ambient state. Helpers: `styled_topn_table`, `eda_quantile_table`, `class_balance_bar`, `state_bar`, `feature_importance_bar`, `lag_corr_bar`, `heatmap_from_long`, `risk_band_donut`, `quadrant_scatter`, `weekly_trend_multiline`, `confusion_matrix_heatmap`, `residual_plot`. Palette: seaborn "deep" (categorical) + Reds (sequential risk) + RdBu_r (diverging). Smoke-tested all 12 with tiny fixtures.
+**Why:** Pre-req for the data-science-quality push on the thematic notebooks (viz commits B–E). Moves plotting out of notebooks so the notebooks stay thin and the chart aesthetics are consistent across all four.
+**Impact:** Zero pipeline change; `checks.run_all` still 11/11. No numerical drift (module doesn't touch any cached step). Matplotlib + seaborn were already declared deps.
+
 ### 2026-04-24 — Grading checklist refreshed; refactor complete (commit 12)
 **Choice:** Updated `docs/grading_checklist.md` to mirror the post-refactor shape: every Spark-surface item cross-references the `checks.run_all` function that enforces it programmatically; added a "Refactor milestones" section; noted the 4-notebook submission (not 3). Boxes that remain unticked are the human-only deliverables (presentation PDF + final zip run).
 **Why:** Refactor plan step 12 — keep the checklist in sync with the PDF rubric AND with the programmatic checks so the two surfaces can't drift.
