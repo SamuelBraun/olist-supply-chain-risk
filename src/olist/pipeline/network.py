@@ -245,6 +245,27 @@ def compute_connected_components(spark: SparkSession) -> DataFrame:
     return cc.join(component_sizes, "component", "left")
 
 
+def component_size_histogram(spark: SparkSession) -> DataFrame:
+    """Bin distinct components by size (isolated / 2–4 / 5–9 / 10–99 / 100+)
+    and count components per bin. Five-row small aggregate, drives the
+    component-size distribution bar in NB3 §5.
+    """
+    cc = spark.read.parquet(resolve_path("outputs/_cache/network_connected_components.parquet"))
+    distinct_components = cc.select("component", "component_size").distinct()
+    return (
+        distinct_components.withColumn(
+            "size_bin",
+            F.when(F.col("component_size") == 1, "1 (isolated)")
+            .when(F.col("component_size") <= 4, "2–4")
+            .when(F.col("component_size") <= 9, "5–9")
+            .when(F.col("component_size") <= 99, "10–99")
+            .otherwise("100+"),
+        )
+        .groupBy("size_bin")
+        .agg(F.count("*").alias("n_components"))
+    )
+
+
 @step(
     name="network.motifs_shared_customers",
     inputs=[
