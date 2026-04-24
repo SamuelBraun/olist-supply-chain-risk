@@ -33,6 +33,38 @@
       ],
       "version": 1,
       "written_at": "2026-04-23T13:34:49"
+    },
+    "sentiment.lead_indicator_lags": {
+      "fingerprint": "b3bd8e7e7c13a22552505bfcbe86c62c0c08629a29b17bf1bd8e86cf05b433e9",
+      "outputs": [
+        "outputs/_cache/sentiment_lead_lags.parquet"
+      ],
+      "version": 1,
+      "written_at": "2026-04-24T19:38:52"
+    },
+    "sentiment.lstm_metrics": {
+      "fingerprint": "df90b36bab637332e0070396d16de225d9a408f16430ec755bc711c69f8873e6",
+      "outputs": [
+        "outputs/_cache/sentiment_lstm_metrics.parquet"
+      ],
+      "version": 1,
+      "written_at": "2026-04-24T19:38:43"
+    },
+    "sentiment.reviews_with_seller": {
+      "fingerprint": "d4128b0aa187cde2ec2819afaa516eddf2b91ba9de440612d4d28a38d5d2e805",
+      "outputs": [
+        "outputs/_cache/sentiment_reviews_with_seller.parquet"
+      ],
+      "version": 1,
+      "written_at": "2026-04-24T19:37:47"
+    },
+    "sentiment.seller_scores": {
+      "fingerprint": "dffd567999c47f53a0b62b2ff0b8755634f3fa1c97ee12becde554bef32e7a2a",
+      "outputs": [
+        "outputs/nb2_seller_sentiment_scores.parquet"
+      ],
+      "version": 1,
+      "written_at": "2026-04-24T19:38:45"
     }
   },
   "version": 1
