@@ -401,6 +401,42 @@ def weekly_sentiment_rollup(reviews_with_seller: DataFrame) -> DataFrame:
     )
 
 
+def confusion_counts(test_preds: DataFrame) -> DataFrame:
+    """4-row summary DataFrame: ``label``, ``prediction``, ``n``.
+
+    Feeds :func:`olist.viz.confusion_matrix_heatmap`. Pure Spark groupBy —
+    the materialisation happens at render time via ``.toPandas()`` on
+    this already-tiny frame (4 rows).
+    """
+    return (
+        test_preds.groupBy("label", "prediction")
+        .count()
+        .withColumnRenamed("count", "n")
+        .orderBy("label", "prediction")
+    )
+
+
+def top_sellers_by_reviews(
+    weekly_with_trend: DataFrame,
+    *,
+    k: int = 5,
+) -> DataFrame:
+    """Filter ``weekly_with_trend`` to the top-``k`` sellers by total review
+    count (summed across all weeks). Returned long-format DF has columns
+    ``seller_id, year_week, avg_score_week, rolling_6w_mean, n_reviews_week``
+    — suitable for :func:`olist.viz.weekly_trend_multiline`.
+    """
+    totals = (
+        weekly_with_trend.groupBy("seller_id")
+        .agg(F.sum("n_reviews_week").alias("total_reviews"))
+        .orderBy(F.col("total_reviews").desc())
+        .limit(k)
+    )
+    return weekly_with_trend.join(
+        F.broadcast(totals.select("seller_id")), "seller_id", "inner"
+    ).orderBy("seller_id", "year_week")
+
+
 @step(
     name="sentiment.seller_scores",
     inputs=["outputs/_cache/sentiment_reviews_with_seller.parquet"],
