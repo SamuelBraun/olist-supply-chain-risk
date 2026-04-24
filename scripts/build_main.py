@@ -350,75 +350,76 @@ code('''from olist.pipeline.convergence import (
     top50_for_quadrant, state_mean_risk,
     RISK_WEIGHTS, RISK_CRITICAL_THRESHOLD, RISK_SAFE_THRESHOLD,
 )
+from olist import viz
 
 risk = build_seller_risk_index(spark)
 print(f"Weights: {RISK_WEIGHTS}   Thresholds: CRITICAL > {RISK_CRITICAL_THRESHOLD}, SAFE < {RISK_SAFE_THRESHOLD}")
 print("Risk-band counts:")
 risk_band_counts(risk).show()
-
-print("\\nTop 20 highest-risk sellers:")
-risk.orderBy(F.col("risk_score").desc()).limit(20).select(
-    "seller_id", "seller_state", "risk_score", "risk_class",
-    "demand_norm", "sentiment_norm", "network_norm",
-).show(truncate=False)
+print(f"Total scored sellers: {risk.count():,}")
 ''')
 
-md("""### Risk-band histogram + quadrant chart + state bar chart""")
+md("""### Top-20 highest-risk sellers — deployment-ready table
 
-code('''# BIG-DATA-SAFETY-ESCAPE: PANDAS_MATPLOTLIB_VIZ — every plt.* call in
-# the notebook is covered by this umbrella; specific IDs below flag the
-# driver-side materialisation that feeds each chart.
-import numpy as np
-import matplotlib.pyplot as plt
+The account-management short-list: the 20 sellers where intervention will move the most aggregate risk. Bar embedded on `risk_score` so the in-band spread is visible; gradient on the three normalised components shows *which* signal is driving each seller's placement (delay-heavy vs sentiment-heavy vs network-heavy).""")
 
-# 1. Risk-band histogram (single-row aggregate → pandas)
-# BIG-DATA-SAFETY-ESCAPE: SMALL_SUMMARY_COLLECT
-band_counts_pd = risk_band_counts(risk).toPandas()
-fig, ax = plt.subplots(figsize=(5, 3.5))
-colors = {"SAFE": "#55A868", "WARNING": "#DD8452", "CRITICAL": "#C44E52"}
-bars = ax.bar(band_counts_pd["risk_class"], band_counts_pd["n"],
-              color=[colors.get(c, "#888") for c in band_counts_pd["risk_class"]])
-for b, n in zip(bars, band_counts_pd["n"]):
-    ax.text(b.get_x() + b.get_width() / 2, b.get_height(), f"{int(n):,}",
-            ha="center", va="bottom")
-ax.set_title("Sellers per risk class")
-ax.set_ylabel("# sellers")
-plt.tight_layout()
-plt.show()
-''')
-
-code('''# 2. Top-50 risk quadrant: demand × sentiment, bubble = pagerank, colour = risk_score.
-top50 = top50_for_quadrant(risk)
-
-fig, ax = plt.subplots(figsize=(7, 5))
-sizes = 30 + 4000 * (top50["pagerank_score"] / top50["pagerank_score"].max())
-sc = ax.scatter(
-    top50["demand_norm"], top50["sentiment_norm"], s=sizes,
-    c=top50["risk_score"], cmap="Reds", alpha=0.75,
-    edgecolors="black", linewidths=0.5,
+code('''# BIG-DATA-SAFETY-ESCAPE: PANDAS_MATPLOTLIB_VIZ — capped to 20 rows
+top20_risk = (
+    risk.orderBy(F.col("risk_score").desc())
+    .limit(20)
+    .select(
+        "seller_id", "seller_state", "risk_score", "risk_class",
+        "demand_norm", "sentiment_norm", "network_norm",
+    )
+    .toPandas()
 )
-ax.axhline(0.5, color="grey", linewidth=0.6, linestyle="--")
-ax.axvline(0.5, color="grey", linewidth=0.6, linestyle="--")
-ax.set_xlabel("demand_norm  (higher = longer avg delay)")
-ax.set_ylabel("sentiment_norm  (higher = worse sentiment)")
-ax.set_title("Top-50 risk quadrant — bubble size = PageRank, colour = risk_score")
-plt.colorbar(sc, ax=ax, label="risk_score")
-plt.tight_layout()
-plt.show()
+top20_risk["seller_id"] = top20_risk["seller_id"].str.slice(0, 10) + "…"
+viz.styled_topn_table(
+    top20_risk,
+    bar_cols=["risk_score"],
+    gradient_cols=["demand_norm", "sentiment_norm", "network_norm"],
+    fmt={
+        "risk_score": "{:.3f}",
+        "demand_norm": "{:.3f}",
+        "sentiment_norm": "{:.3f}",
+        "network_norm": "{:.3f}",
+    },
+    title="Top-20 highest-risk sellers — risk_score + normalised component breakdown",
+)
 ''')
 
-code('''# 3. State bar chart — mean risk per seller_state across ALL sellers.
-state_risk = state_mean_risk(risk)
+md("""### Risk-band donut + quadrant scatter + state bar
 
-fig, ax = plt.subplots(figsize=(8, 4))
-ax.bar(state_risk["seller_state"], state_risk["mean_risk"], color="#C44E52")
-ax.set_xlabel("seller_state")
-ax.set_ylabel("mean risk_score")
-ax.set_title("Mean seller risk_score by Brazilian state")
-plt.xticks(rotation=45)
-plt.tight_layout()
-plt.show()
-state_risk.head(10)
+Three management-ready visuals: (1) how many sellers land in each band; (2) where the top-50 sellers sit on the demand × sentiment plane, weighted by PageRank; (3) which Brazilian states carry the highest mean risk.""")
+
+code('''# BIG-DATA-SAFETY-ESCAPE: SMALL_SUMMARY_COLLECT — 3-row aggregate
+band_counts_pd = risk_band_counts(risk).toPandas()
+viz.risk_band_donut(band_counts_pd)
+''')
+
+code('''# BIG-DATA-SAFETY-ESCAPE: TOP50_VIZ — 50-row pandas frame produced by convergence helper
+top50 = top50_for_quadrant(risk)
+viz.quadrant_scatter(
+    top50,
+    x="demand_norm",
+    y="sentiment_norm",
+    size="pagerank_score",
+    color="risk_score",
+    title="Top-50 risk quadrant — bubble = PageRank, colour = risk_score",
+    xlabel="demand_norm (higher = longer avg delay)",
+    ylabel="sentiment_norm (higher = worse sentiment)",
+)
+''')
+
+code('''# BIG-DATA-SAFETY-ESCAPE: STATE_AGG_VIZ — per-state aggregate (≤27 rows)
+state_risk = state_mean_risk(risk)
+viz.state_bar(
+    state_risk,
+    value_col="mean_risk",
+    label_col="seller_state",
+    title="Mean seller risk_score by Brazilian state",
+    sort="desc",
+)
 ''')
 
 # ===========================================================================
