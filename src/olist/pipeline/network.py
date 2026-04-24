@@ -22,7 +22,7 @@ from pyspark.sql import DataFrame, SparkSession
 from pyspark.sql import functions as F
 from pyspark.sql.functions import broadcast
 
-from ..cache import step
+from ..cache import resolve_path, step
 from ..loaders import load_customers, load_order_items, load_orders, load_sellers
 from ..safety import (  # noqa: F401 — referenced by annotation comments
     BFS_BACKUP_COLLECT,
@@ -103,7 +103,7 @@ def build_vertices(spark: SparkSession) -> DataFrame:
     tagged with a `type` column ('seller' / 'customer'). Uses
     `customer_unique_id` (not `customer_id`) per CLAUDE.md §4.
     """
-    order_lines = spark.read.parquet("outputs/_cache/network_order_lines.parquet")
+    order_lines = spark.read.parquet(resolve_path("outputs/_cache/network_order_lines.parquet"))
     sellers_v = (
         order_lines.select(F.col("seller_id").alias("id"))
         .distinct()
@@ -131,7 +131,7 @@ def build_edges(spark: SparkSession) -> DataFrame:
     Bidirectionality is required so PageRank flows both ways and BFS can
     reach other sellers via shared customers.
     """
-    order_lines = spark.read.parquet("outputs/_cache/network_order_lines.parquet")
+    order_lines = spark.read.parquet(resolve_path("outputs/_cache/network_order_lines.parquet"))
     cust_seller_agg = order_lines.groupBy(
         "customer_unique_id", "seller_id"
     ).agg(
@@ -162,8 +162,8 @@ def build_graph_frame(spark: SparkSession):
     """
     from graphframes import GraphFrame
 
-    vertices = spark.read.parquet("outputs/_cache/network_vertices.parquet")
-    edges = spark.read.parquet("outputs/_cache/network_edges.parquet")
+    vertices = spark.read.parquet(resolve_path("outputs/_cache/network_vertices.parquet"))
+    edges = spark.read.parquet(resolve_path("outputs/_cache/network_edges.parquet"))
     return GraphFrame(vertices, edges)
 
 
@@ -174,8 +174,8 @@ def build_graph_frame(spark: SparkSession):
 
 def seller_degree_stats(spark: SparkSession) -> DataFrame:
     """Seller in-degree (total + purchase-only). Not cached — cheap."""
-    vertices = spark.read.parquet("outputs/_cache/network_vertices.parquet")
-    edges = spark.read.parquet("outputs/_cache/network_edges.parquet")
+    vertices = spark.read.parquet(resolve_path("outputs/_cache/network_vertices.parquet"))
+    edges = spark.read.parquet(resolve_path("outputs/_cache/network_edges.parquet"))
     gf = build_graph_frame(spark)
     in_degrees = gf.inDegrees
     purchase_in = (
@@ -297,7 +297,7 @@ def compute_bfs_backups(spark: SparkSession) -> DataFrame:
     and BFS_BACKUP_COLLECT (one row per loop iteration). Both are capped
     by construction.
     """
-    seller_pagerank = spark.read.parquet("outputs/_cache/network_pagerank.parquet")
+    seller_pagerank = spark.read.parquet(resolve_path("outputs/_cache/network_pagerank.parquet"))
     gf = build_graph_frame(spark)
     # BIG-DATA-SAFETY-ESCAPE: TOP10_PAGERANK_DRIVER — 10-row driver list
     top10 = [
@@ -339,8 +339,8 @@ def compute_delayed_subgraph_pagerank(spark: SparkSession) -> DataFrame:
     """
     from graphframes import GraphFrame
 
-    vertices = spark.read.parquet("outputs/_cache/network_vertices.parquet")
-    edges = spark.read.parquet("outputs/_cache/network_edges.parquet")
+    vertices = spark.read.parquet(resolve_path("outputs/_cache/network_vertices.parquet"))
+    edges = spark.read.parquet(resolve_path("outputs/_cache/network_edges.parquet"))
     delayed_edges = edges.filter(F.col("avg_delay") > 5)
     delayed_vertex_ids = (
         delayed_edges.select(F.col("src").alias("id"))
@@ -379,11 +379,11 @@ def build_seller_network_scores(spark: SparkSession) -> DataFrame:
     Columns: seller_id, pagerank_score, in_degree, is_isolated,
     backup_seller_id, network_risk_score.
     """
-    vertices = spark.read.parquet("outputs/_cache/network_vertices.parquet")
-    seller_pagerank = spark.read.parquet("outputs/_cache/network_pagerank.parquet")
-    cc = spark.read.parquet("outputs/_cache/network_connected_components.parquet")
-    bfs_backups = spark.read.parquet("outputs/_cache/network_bfs_backups.parquet")
-    delayed = spark.read.parquet("outputs/_cache/network_delayed_pagerank.parquet")
+    vertices = spark.read.parquet(resolve_path("outputs/_cache/network_vertices.parquet"))
+    seller_pagerank = spark.read.parquet(resolve_path("outputs/_cache/network_pagerank.parquet"))
+    cc = spark.read.parquet(resolve_path("outputs/_cache/network_connected_components.parquet"))
+    bfs_backups = spark.read.parquet(resolve_path("outputs/_cache/network_bfs_backups.parquet"))
+    delayed = spark.read.parquet(resolve_path("outputs/_cache/network_delayed_pagerank.parquet"))
 
     # Recompute per-seller degree stats (cheap).
     seller_degrees = seller_degree_stats(spark)

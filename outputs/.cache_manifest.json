@@ -1,0 +1,39 @@
+{
+  "entries": {
+    "demand.fit_and_score": {
+      "fingerprint": "9ef004bc4a62347f9a1607dc952d98511314f85b200c630fde249c8a67cd2660",
+      "outputs": [
+        "outputs/_cache/demand_predictions.parquet",
+        "outputs/_cache/demand_metrics.parquet",
+        "outputs/nb1_seller_demand_scores.parquet"
+      ],
+      "version": 1,
+      "written_at": "2026-04-23T13:38:42"
+    },
+    "demand.geo_centroids": {
+      "fingerprint": "99cc6ef4f06015480525da62b0ab3157f2e765c8456338ea0373a7f4fd3dc76c",
+      "outputs": [
+        "outputs/geo_centroids.parquet"
+      ],
+      "version": 1,
+      "written_at": "2026-04-23T13:34:41"
+    },
+    "demand.order_lines": {
+      "fingerprint": "cad52489b967c48dac84c563db2a1b23083762a51853acb85365d2e98c3dbe7a",
+      "outputs": [
+        "outputs/_cache/demand_order_lines.parquet"
+      ],
+      "version": 1,
+      "written_at": "2026-04-23T13:34:45"
+    },
+    "demand.weekly_order_volume": {
+      "fingerprint": "7982a06fcd392dc6474aa2c7bda54d78d916782bc0b8635e83ccbdd775071dc5",
+      "outputs": [
+        "outputs/nb1_weekly_order_volume.parquet"
+      ],
+      "version": 1,
+      "written_at": "2026-04-23T13:34:49"
+    }
+  },
+  "version": 1
+}

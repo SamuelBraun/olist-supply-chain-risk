@@ -30,7 +30,7 @@ from pyspark.sql import DataFrame, SparkSession
 from pyspark.sql import functions as F
 from pyspark.sql.window import Window
 
-from ..cache import step
+from ..cache import resolve_path, step
 from ..loaders import load_order_items, load_order_reviews, load_orders, load_sellers
 from ..safety import (  # noqa: F401 — referenced by annotation comments
     BFS_BACKUP_COLLECT,
@@ -339,7 +339,7 @@ def train_lstm_cached(spark: SparkSession) -> DataFrame:
     import json
 
     reviews = spark.read.parquet(
-        "outputs/_cache/sentiment_reviews_with_seller.parquet"
+        resolve_path("outputs/_cache/sentiment_reviews_with_seller.parquet")
     )
     labelled = label_reviews(reviews)
     text_labelled = (
@@ -418,7 +418,7 @@ def build_seller_sentiment_scores(spark: SparkSession) -> DataFrame:
     than 0.25 stars between the prior and current 6-week window.
     """
     reviews = spark.read.parquet(
-        "outputs/_cache/sentiment_reviews_with_seller.parquet"
+        resolve_path("outputs/_cache/sentiment_reviews_with_seller.parquet")
     )
     weekly = weekly_sentiment_rollup(reviews)
     last_row_w = Window.partitionBy("seller_id").orderBy(F.col("week_num").desc())
@@ -496,7 +496,7 @@ def build_lead_indicator_lags(spark: SparkSession) -> DataFrame:
     The driver-side `.first()` is flagged as SMALL_SUMMARY_COLLECT.
     """
     reviews = spark.read.parquet(
-        "outputs/_cache/sentiment_reviews_with_seller.parquet"
+        resolve_path("outputs/_cache/sentiment_reviews_with_seller.parquet")
     )
     weekly_sentiment = (
         reviews.filter(F.col("review_score").isNotNull())
@@ -511,7 +511,7 @@ def build_lead_indicator_lags(spark: SparkSession) -> DataFrame:
         .groupBy("seller_id", "year_week")
         .agg(F.avg("review_score").alias("avg_score_week"))
     )
-    weekly_volume = spark.read.parquet("outputs/nb1_weekly_order_volume.parquet")
+    weekly_volume = spark.read.parquet(resolve_path("outputs/nb1_weekly_order_volume.parquet"))
     combined = (
         weekly_sentiment.join(weekly_volume, ["seller_id", "year_week"], "inner")
         .select("seller_id", "year_week", "avg_score_week", "weekly_order_count")

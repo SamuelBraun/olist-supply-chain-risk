@@ -102,9 +102,9 @@ def build_seller_risk_index(spark: SparkSession) -> DataFrame:
     Sentiment is inverted (higher = worse) so all three `*_norm` columns
     point in the same direction: higher = more risky.
     """
-    demand = spark.read.parquet("outputs/nb1_seller_demand_scores.parquet")
-    sentiment = spark.read.parquet("outputs/nb2_seller_sentiment_scores.parquet")
-    network = spark.read.parquet("outputs/nb3_seller_network_scores.parquet")
+    demand = spark.read.parquet(resolve_path("outputs/nb1_seller_demand_scores.parquet"))
+    sentiment = spark.read.parquet(resolve_path("outputs/nb2_seller_sentiment_scores.parquet"))
+    network = spark.read.parquet(resolve_path("outputs/nb3_seller_network_scores.parquet"))
     joined = (
         demand.join(sentiment, "seller_id", "inner").join(
             network.select("seller_id", "pagerank_score", "network_risk_score"),

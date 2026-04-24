@@ -42,6 +42,22 @@ def _root() -> Path:
     return Path(override) if override else _DEFAULT_ROOT
 
 
+def project_root() -> Path:
+    """Absolute path to the repository root. Pipeline modules use this to
+    resolve parquet paths so `spark.read.parquet(...)` works regardless of
+    the caller's current working directory (e.g. the notebook's
+    `notebooks/` CWD vs. a script's repo-root CWD).
+    """
+    return _root()
+
+
+def resolve_path(p: str | Path) -> str:
+    """Resolve a repo-relative path (or absolute path) to an absolute string
+    suitable for `spark.read.parquet` / `spark.read.csv`.
+    """
+    return str(_resolve(p))
+
+
 def _manifest_path() -> Path:
     return _root() / "outputs" / ".cache_manifest.json"
 

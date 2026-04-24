@@ -30,7 +30,7 @@ from pyspark.sql.functions import broadcast
 from pyspark.sql.types import DateType, LongType, StructField, StructType
 from pyspark.sql.window import Window
 
-from ..cache import step
+from ..cache import resolve_path, step
 from ..loaders import (
     load_category_translation,
     load_customers,
@@ -251,7 +251,7 @@ def build_weekly_order_volume(spark: SparkSession) -> DataFrame:
     Repartitioned by seller_id so NB2's lead-indicator join co-locates
     partitions. Consumed by both the feature pipeline (below) and NB2.
     """
-    order_lines = spark.read.parquet("outputs/_cache/demand_order_lines.parquet")
+    order_lines = spark.read.parquet(resolve_path("outputs/_cache/demand_order_lines.parquet"))
     return (
         order_lines.groupBy("seller_id", "year_week")
         .agg(F.count("*").alias("weekly_order_count"))
@@ -352,8 +352,8 @@ def fit_and_score(spark: SparkSession) -> dict[str, DataFrame]:
     * `nb1_seller_demand_scores` — (seller_id, seller_state, forecast_uplift_pct,
       avg_delay_days, delay_risk_flag).
     """
-    weekly = spark.read.parquet("outputs/nb1_weekly_order_volume.parquet")
-    order_lines = spark.read.parquet("outputs/_cache/demand_order_lines.parquet")
+    weekly = spark.read.parquet(resolve_path("outputs/nb1_weekly_order_volume.parquet"))
+    order_lines = spark.read.parquet(resolve_path("outputs/_cache/demand_order_lines.parquet"))
     sellers = load_sellers(spark)
 
     weekly_features = add_weekly_features(weekly)
