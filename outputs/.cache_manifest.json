@@ -34,6 +34,78 @@
       "version": 1,
       "written_at": "2026-04-23T13:34:49"
     },
+    "network.bfs_backups": {
+      "fingerprint": "55da46b755b7215e7c45d4569ef0d4a35800c3fce3101d16a1d9e969dae3cca6",
+      "outputs": [
+        "outputs/_cache/network_bfs_backups.parquet"
+      ],
+      "version": 1,
+      "written_at": "2026-04-24T19:48:32"
+    },
+    "network.connected_components": {
+      "fingerprint": "5f10d58c5b9d6c4c807098b1ca53c63219045f3db59102ffe6f03a816afff580",
+      "outputs": [
+        "outputs/_cache/network_connected_components.parquet"
+      ],
+      "version": 1,
+      "written_at": "2026-04-24T19:48:15"
+    },
+    "network.delayed_pagerank": {
+      "fingerprint": "5f10d58c5b9d6c4c807098b1ca53c63219045f3db59102ffe6f03a816afff580",
+      "outputs": [
+        "outputs/_cache/network_delayed_pagerank.parquet"
+      ],
+      "version": 1,
+      "written_at": "2026-04-24T19:48:36"
+    },
+    "network.edges": {
+      "fingerprint": "198651aa0adc2af02ff8a31354af53d145b9bdb58a31bbc0e2fd61ea8d371da1",
+      "outputs": [
+        "outputs/_cache/network_edges.parquet"
+      ],
+      "version": 1,
+      "written_at": "2026-04-24T19:47:49"
+    },
+    "network.motifs_shared_customers": {
+      "fingerprint": "5f10d58c5b9d6c4c807098b1ca53c63219045f3db59102ffe6f03a816afff580",
+      "outputs": [
+        "outputs/_cache/network_motifs.parquet"
+      ],
+      "version": 1,
+      "written_at": "2026-04-24T19:48:16"
+    },
+    "network.order_lines": {
+      "fingerprint": "9327f0fbf448cf7dff23aa43e5e975bf159f10ef803d82e9ce1841494c66437e",
+      "outputs": [
+        "outputs/_cache/network_order_lines.parquet"
+      ],
+      "version": 1,
+      "written_at": "2026-04-24T19:47:46"
+    },
+    "network.pagerank": {
+      "fingerprint": "5f10d58c5b9d6c4c807098b1ca53c63219045f3db59102ffe6f03a816afff580",
+      "outputs": [
+        "outputs/_cache/network_pagerank.parquet"
+      ],
+      "version": 1,
+      "written_at": "2026-04-24T19:48:02"
+    },
+    "network.seller_scores": {
+      "fingerprint": "7b43ba5fa1b6fc8e65a3bb10470dcfcf7bccbf9108cc4970514beb2179e81eff",
+      "outputs": [
+        "outputs/nb3_seller_network_scores.parquet"
+      ],
+      "version": 1,
+      "written_at": "2026-04-24T19:48:37"
+    },
+    "network.vertices": {
+      "fingerprint": "198651aa0adc2af02ff8a31354af53d145b9bdb58a31bbc0e2fd61ea8d371da1",
+      "outputs": [
+        "outputs/_cache/network_vertices.parquet"
+      ],
+      "version": 1,
+      "written_at": "2026-04-24T19:47:48"
+    },
     "sentiment.lead_indicator_lags": {
       "fingerprint": "b3bd8e7e7c13a22552505bfcbe86c62c0c08629a29b17bf1bd8e86cf05b433e9",
       "outputs": [
