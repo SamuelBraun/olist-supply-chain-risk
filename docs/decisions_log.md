@@ -57,6 +57,11 @@ Append-only record of autonomous choices made during the build. Used as the sour
 **Why:** Reduces interactive churn for the long rerun-heavy commits 6–9 (three thematic notebooks + the main notebook, each of which takes several minutes to execute).
 **Impact:** All subsequent decisions in this block are auto-recorded here; commits proceed without stopping for confirmation unless a stop condition is hit.
 
+### 2026-04-24 — Grading checklist refreshed; refactor complete (commit 12)
+**Choice:** Updated `docs/grading_checklist.md` to mirror the post-refactor shape: every Spark-surface item cross-references the `checks.run_all` function that enforces it programmatically; added a "Refactor milestones" section; noted the 4-notebook submission (not 3). Boxes that remain unticked are the human-only deliverables (presentation PDF + final zip run).
+**Why:** Refactor plan step 12 — keep the checklist in sync with the PDF rubric AND with the programmatic checks so the two surfaces can't drift.
+**Impact:** End of the 12-commit refactor sequence. From here: human exports the presentation PDF and runs `bash submission/build_zip.sh <GROUP>` to produce the Moodle deliverable.
+
 ### 2026-04-24 — Submission infra + architecture doc + cleanup (refactor commit 11)
 **Choice:** Added `run.sh` (executes 00_main end-to-end with JAVA_HOME resolved; 1-line reproducibility entry point). Extended `submission/build_zip.sh` to re-execute all four notebooks (00_main first), then call new `scripts/assert_notebook_outputs.py` which fails loudly if any code cell has empty or error outputs. Added `docs/architecture.md` as the one-page module/cache/safety map. Removed superseded scaffolding: `notebooks/_builders/build_nb{1,2,3}.py` (replaced by `scripts/build_nb*.py`), the three `notebooks/.backup_*.ipynb` files (R2 verification done), and the untracked `outputs/_baseline/` diff workspace.
 **Why:** Final infra piece. The R2 risk from the refactor plan was "reruns might diverge from baseline" — the backups are no longer needed now that every notebook has been re-executed and parquet-diffed within rtol=1e-4. Non-empty-output assertion is the brief's hard rule in enforcement form.
