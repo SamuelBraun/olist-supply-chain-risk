@@ -9,38 +9,39 @@
       "written_at": "2026-04-24T19:54:06"
     },
     "demand.fit_and_score": {
-      "fingerprint": "9ef004bc4a62347f9a1607dc952d98511314f85b200c630fde249c8a67cd2660",
+      "fingerprint": "76d063704c051e7be1cc6931a0d455e88b0d3b930395f67f563eb7ccf4917fca",
       "outputs": [
         "outputs/_cache/demand_predictions.parquet",
         "outputs/_cache/demand_metrics.parquet",
+        "outputs/_cache/demand_feature_importances.parquet",
         "outputs/nb1_seller_demand_scores.parquet"
       ],
-      "version": 1,
-      "written_at": "2026-04-23T13:38:42"
+      "version": 2,
+      "written_at": "2026-04-24T22:26:22"
     },
     "demand.geo_centroids": {
-      "fingerprint": "99cc6ef4f06015480525da62b0ab3157f2e765c8456338ea0373a7f4fd3dc76c",
+      "fingerprint": "045373662ab66707fde1733be0df0ecc2d6274636677f840dbc3c8bebbe104c8",
       "outputs": [
         "outputs/geo_centroids.parquet"
       ],
       "version": 1,
-      "written_at": "2026-04-23T13:34:41"
+      "written_at": "2026-04-24T22:24:08"
     },
     "demand.order_lines": {
-      "fingerprint": "cad52489b967c48dac84c563db2a1b23083762a51853acb85365d2e98c3dbe7a",
+      "fingerprint": "176d296f99cab49f4f9399ce259819ecafdddf535bbfbc75e14d8b1684d7fe1c",
       "outputs": [
         "outputs/_cache/demand_order_lines.parquet"
       ],
       "version": 1,
-      "written_at": "2026-04-23T13:34:45"
+      "written_at": "2026-04-24T22:23:04"
     },
     "demand.weekly_order_volume": {
-      "fingerprint": "7982a06fcd392dc6474aa2c7bda54d78d916782bc0b8635e83ccbdd775071dc5",
+      "fingerprint": "815561fc34892582868dc7df729c07ee2c4aadfdaa408709442644a2059463c9",
       "outputs": [
         "outputs/nb1_weekly_order_volume.parquet"
       ],
       "version": 1,
-      "written_at": "2026-04-23T13:34:49"
+      "written_at": "2026-04-24T22:24:09"
     },
     "network.bfs_backups": {
       "fingerprint": "4f63a151b99d7c5e74b89c836da49fec9e93f33f3bcbecb86220e4af5fbb8654",

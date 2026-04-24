@@ -336,10 +336,11 @@ def build_cv_estimators(evaluator: RegressionEvaluator) -> dict:
     outputs=[
         "outputs/_cache/demand_predictions.parquet",
         "outputs/_cache/demand_metrics.parquet",
+        "outputs/_cache/demand_feature_importances.parquet",
         "outputs/nb1_seller_demand_scores.parquet",
     ],
     code_deps=_DEMAND_CODE_DEPS,
-    version=1,
+    version=2,
 )
 def fit_and_score(spark: SparkSession) -> dict[str, DataFrame]:
     """Fit GBT + RF via `CrossValidator(numFolds=3)`, pick the best by test
@@ -444,8 +445,33 @@ def fit_and_score(spark: SparkSession) -> dict[str, DataFrame]:
         schema="gbt_rmse double, rf_rmse double, best_name string",
     )
 
+    fi_vector = best_model.bestModel.featureImportances.toArray()
+    fi_rows = [(FEATURE_COLS[i], float(fi_vector[i])) for i in range(len(FEATURE_COLS))]
+    feature_importances = spark.createDataFrame(
+        fi_rows, schema="feature string, importance double"
+    )
+
     return {
         "demand_predictions": predictions_all,
         "demand_metrics": metrics_row,
+        "demand_feature_importances": feature_importances,
         "nb1_seller_demand_scores": seller_demand_scores,
     }
+
+
+def best_model_feature_importances(spark: SparkSession) -> DataFrame:
+    """Read the cached (feature, importance) table written by `fit_and_score`.
+    Drives the feature-importance bar in NB1 §5.
+    """
+    return spark.read.parquet(
+        resolve_path("outputs/_cache/demand_feature_importances.parquet")
+    )
+
+
+def predictions_sample(spark: SparkSession, n: int = 1000) -> DataFrame:
+    """Return a `limit(n)` sample of the full-model predictions parquet.
+    Feeds the residual plot in NB1 §5 — a 1000-row cap is big-data-safe.
+    """
+    return spark.read.parquet(
+        resolve_path("outputs/_cache/demand_predictions.parquet")
+    ).limit(n)
