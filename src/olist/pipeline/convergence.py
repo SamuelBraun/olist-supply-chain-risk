@@ -21,7 +21,7 @@ from dataclasses import dataclass
 from pyspark.sql import DataFrame, SparkSession
 from pyspark.sql import functions as F
 
-from ..cache import step
+from ..cache import resolve_path, step
 from ..safety import (  # noqa: F401 — referenced by annotation comments
     RISK_NORM_AGG,
     STATE_AGG_VIZ,

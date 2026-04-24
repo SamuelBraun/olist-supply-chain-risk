@@ -1,5 +1,13 @@
 {
   "entries": {
+    "convergence.seller_risk_index": {
+      "fingerprint": "ccb7ba9de61198c2fcc6cb9d4219be64b7db5416b712a2e4d9f2cb18aaa95977",
+      "outputs": [
+        "outputs/seller_risk_index.parquet"
+      ],
+      "version": 1,
+      "written_at": "2026-04-24T19:54:06"
+    },
     "demand.fit_and_score": {
       "fingerprint": "9ef004bc4a62347f9a1607dc952d98511314f85b200c630fde249c8a67cd2660",
       "outputs": [
