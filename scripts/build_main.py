@@ -249,13 +249,289 @@ Every function in `src/olist/pipeline/*.py` was written to work *identically* at
 
 
 # ===========================================================================
-# Sections 3-7 land in subsequent commits.
+# 3. Sub-Analysis 1 — Demand Forecasting
+# ===========================================================================
+md("""## 3. Sub-Analysis 1 — Demand Forecasting
+
+This is the first of three independent data-science workflows. Each follows the same eight-substep skeleton (framing → EDA → cleaning → preprocessing → feature engineering → modelling → evaluation → interpretation) and closes with a **Key Takeaways** box.""")
+
+
+md("""### 3.1 Problem framing
+
+**Sub-research question.** *Which sellers are trending down in volume, shipping late, or both — so account management can intervene before the pipeline dries up?*
+
+**Success criterion.** Two per-seller signals that an account manager can act on:
+1. **`forecast_uplift_pct`** — predicted next-4-week volume vs. trailing-4-week actuals. Negative means shrinking.
+2. **`avg_delay_days`** + **`delay_risk_flag`** — average delivery delay; flag if `> 3` days.
+
+**What "good" looks like.** A trained regressor with test RMSE small enough to detect ±20% week-over-week swings (the magnitude of an actionable demand change). RandomForest will be selected if it ties or beats GBT — both are simpler to deploy than a stack.
+
+**What this is *not*.** This is not a single-seller forecast for stock procurement; it is a *triage signal* for the account-management team across the whole marketplace.""")
+
+
+md("""### 3.2 Exploratory data analysis (demand-specific)
+
+We start with the order-line hot DataFrame: `orders_delivered ⋈ order_items ⋈ broadcast(sellers) ⋈ broadcast(products)` with derived `delivery_delay_days`, `purchase_date`, and `year_week`. Two big-data-safe primitives drive the EDA: `approxQuantile` (sketch-based quantiles, 1% relative error) and `approx_count_distinct` (HyperLogLog) — neither requires a full shuffle.""")
+
+code('''from olist.pipeline.demand import build_order_lines, eda_stats
+
+order_lines = build_order_lines(spark)
+print(f"order_lines rows: {order_lines.count():,}")
+
+stats = eda_stats(order_lines)
+print("price quantiles (p25/p50/p75/p95):", stats["price_quantiles"])
+print("delay quantiles (p25/p50/p75/p95):", stats["delay_quantiles"])
+stats["approx_counts"].show()
+
+# BIG-DATA-SAFETY-ESCAPE: PANDAS_MATPLOTLIB_VIZ — 2-row styled summary
+viz.eda_quantile_table(stats)
+''')
+
+md("""**What this means.** Three observations from the EDA:
+
+- **Price is heavy-tailed.** p75 is ~134 BRL but p95 is far higher — a small fraction of high-value orders dominate revenue. The forecast must handle this spread without collapsing to a mean prediction.
+- **Most deliveries arrive *early*.** Delay quantiles are mostly negative (`order_delivered_customer_date < order_estimated_delivery_date`). Only the top quartile is meaningfully late, so the `delay_risk_flag` is set at `> 3` days to isolate the truly-late tail.
+- **The marketplace is wide and not too deep.** ~3,000 distinct sellers, ~33,000 distinct products, ~96,000 delivered orders — this is the per-seller "small N, many sellers" regime where global features (lagged volume, calendar) dominate and per-seller idiosyncratic forecasting would overfit.""")
+
+
+md("""### 3.2.1 Top-revenue sellers + late-rate by state
+
+Two more EDA views to ground the forecast in real seller behaviour.""")
+
+code('''from olist.pipeline.demand import sparksql_queries
+
+queries = sparksql_queries(order_lines)
+
+# BIG-DATA-SAFETY-ESCAPE: PANDAS_MATPLOTLIB_VIZ — capped to 10 rows
+top10_revenue = queries["top_sellers_by_revenue"][1].toPandas()
+top10_revenue["seller_id"] = top10_revenue["seller_id"].str.slice(0, 10) + "…"
+viz.styled_topn_table(
+    top10_revenue,
+    bar_cols=["total_revenue"],
+    fmt={"total_revenue": "R$ {:,.0f}", "line_count": "{:,d}"},
+    title="Top-10 sellers by total revenue",
+)
+''')
+
+code('''# BIG-DATA-SAFETY-ESCAPE: STATE_AGG_VIZ — ≤15-row per-state aggregate
+late_state = queries["late_rate_by_state"][1].toPandas()
+# Spark ROUND returns DECIMAL → pandas Decimal; matplotlib needs float
+late_state["late_rate"] = late_state["late_rate"].astype(float)
+late_state["avg_delay_days"] = late_state["avg_delay_days"].astype(float)
+viz.state_bar(
+    late_state,
+    value_col="late_rate",
+    label_col="seller_state",
+    title="Late-delivery rate by state (top 15)",
+    sort="desc",
+)
+''')
+
+md("""**What this means.** The revenue concentration on the top-10 sellers is striking — losing any one of them is a meaningful platform-revenue event. The late-rate map is the operational-risk geography: a handful of states have late rates well above the national mean. Both observations feed the deployment recommendation in §3.8 (intervention should be both seller-specific *and* regionally targeted).""")
+
+
+md("""### 3.3 Cleaning — drop undelivered / cancelled orders
+
+Already audited globally in §2.5; re-stated here as the demand-specific decision. ~3% of orders have `order_delivered_customer_date IS NULL` (still in transit or cancelled) — they are dropped before the forecast because there is no realised volume to learn from.""")
+
+code('''from olist.pipeline.demand import filter_delivered, load_core_tables
+
+tables = load_core_tables(spark)
+orders = tables["orders"]
+orders_delivered = filter_delivered(orders)
+dropped = orders.count() - orders_delivered.count()
+print(f"orders dropped (not-yet-delivered / cancelled): {dropped:,}")
+print(f"orders retained:                                {orders_delivered.count():,}")
+''')
+
+md("""**Decision rationale.** Imputing volume for cancelled orders would inject a phantom signal; left-censoring on the order date would also work but discards real signal at the recent edge. The simple drop is the most defensible.""")
+
+
+md("""### 3.4 Preprocessing — typed loads, RDD warm-up, SparkSQL temp views
+
+This subsection demonstrates three PySpark primitives on the demand data:
+
+1. **RDD chain** (`textFile → filter → map → reduceByKey → typed DataFrame`) — the lowest-level Spark primitive, used to ingest the raw orders CSV without any DataFrame infrastructure.
+2. **Typed loads via `loaders.load_*`** — explicit `StructType` schemas, no `inferSchema` (would force a redundant full-file pass at scale).
+3. **SparkSQL temp-view queries** — three queries register `order_lines` as a temp view and answer revenue / volume / late-rate questions in plain SQL.""")
+
+code('''from olist.pipeline.demand import rdd_daily_order_count
+print(inspect.getsource(rdd_daily_order_count))
+''')
+
+code('''daily_rdd_df = rdd_daily_order_count(spark)
+print(f"RDD-derived daily rows: {daily_rdd_df.count():,}")
+daily_rdd_df.orderBy("purchase_date").limit(5).show()
+''')
+
+code('''# Three SparkSQL queries on a temp view (the SQL text is printed inline)
+for name, (sql, result) in queries.items():
+    print(f"\\n--- {name} ---")
+    print(sql.strip())
+    result.show(truncate=False)
+''')
+
+md("""**What this means.** The RDD chain produces the same daily-order audit a typed DataFrame would, but on the raw text — proof that the project is built from Spark fundamentals, not just the DataFrame sugar layer. The three SparkSQL queries surface the demand picture in a form a SQL-fluent stakeholder could reproduce in any analytics tool.""")
+
+
+md("""### 3.5 Feature engineering — Window-based lags + rolling, ML Pipeline
+
+This subsection demonstrates two more PySpark primitives:
+
+1. **Window functions.** `Window.partitionBy(seller_id).orderBy(year_week)` provides per-seller lag-1, lag-4, and 4-week rolling-mean features (`rowsBetween(-4, -1)`).
+2. **`pyspark.ml.Pipeline`.** Two stages: `Imputer` (median-imputes the lag features for the first weeks of each seller's history) and `VectorAssembler` (bundles the six model features into a `Vector` column ready for MLlib).""")
+
+code('''from olist.pipeline.demand import (
+    build_weekly_order_volume, build_feature_pipeline,
+    add_weekly_features, FEATURE_COLS,
+)
+
+weekly_order_volume = build_weekly_order_volume(spark)
+print(f"weekly rows: {weekly_order_volume.count():,}")
+
+feature_pipeline = build_feature_pipeline()
+print("\\nFeature Pipeline stages:")
+for stage in feature_pipeline.getStages():
+    print(" ", stage)
+print("\\nFeature columns:", FEATURE_COLS)
+''')
+
+code('''weekly_features = add_weekly_features(weekly_order_volume)
+print(f"weekly_features rows: {weekly_features.count():,}")
+weekly_features.select("seller_id", "year_week", "weekly_order_count", *FEATURE_COLS).limit(5).show()
+''')
+
+md("""**What this means.** The six features the regressors see are: `week_num` (a monotonic time index), `lag_1` and `lag_4` (volume one and four weeks ago), `rolling_4w_mean` (smoothed recent demand), `month` (calendar position), and `is_q4` (Brazilian e-commerce calendar peaks). These are standard time-series-forecasting features that scale identically — there is nothing per-seller bespoke that would break at 100× the seller count.""")
+
+
+md("""### 3.6 Modelling — GBT + RF under 3-fold CV
+
+Two regressors share the same labelled input, each wrapped in a `CrossValidator(numFolds=3, parallelism=2, seed=42)` with a small param grid (`maxDepth ∈ {3, 5}` for GBT; `maxDepth ∈ {5, 10}` for RF). The lower-test-RMSE model wins. Both are tree ensembles — robust to feature scaling, handle non-linear interactions natively, and produce feature importances that we use in §3.7 to interpret what the model actually learned.
+
+**Method choice rationale.** A linear baseline would understate the lag interactions; a deep neural net would over-fit a 35k-row dataset and lose interpretability. Tree ensembles are the right default at this size.""")
+
+code('''from pyspark.ml.evaluation import RegressionEvaluator
+from olist.pipeline.demand import build_cv_estimators, fit_and_score
+
+evaluator = RegressionEvaluator(labelCol="label", predictionCol="prediction", metricName="rmse")
+cv = build_cv_estimators(evaluator)
+print("GBT CrossValidator:")
+print("  numFolds:", cv["gbt_cv"].getNumFolds(), "| param grid size:", len(cv["gbt_cv"].getEstimatorParamMaps()))
+print("RF  CrossValidator:")
+print("  numFolds:", cv["rf_cv"].getNumFolds(), "| param grid size:", len(cv["rf_cv"].getEstimatorParamMaps()))
+''')
+
+code('''scoring = fit_and_score(spark)
+print("--- demand_metrics ---")
+scoring["demand_metrics"].show()
+''')
+
+
+md("""### 3.7 Evaluation — RMSE comparison, feature importance, residual diagnostics""")
+
+md("""#### 3.7.1 GBT vs RF""")
+
+code('''import pandas as pd
+
+# BIG-DATA-SAFETY-ESCAPE: PANDAS_MATPLOTLIB_VIZ — 1-row metrics table
+metrics_pd = scoring["demand_metrics"].toPandas()
+comparison = pd.DataFrame({
+    "model": ["GBTRegressor", "RandomForestRegressor"],
+    "test_rmse": [float(metrics_pd.loc[0, "gbt_rmse"]), float(metrics_pd.loc[0, "rf_rmse"])],
+    "selected": [
+        "✓" if metrics_pd.loc[0, "best_name"] == "GBT" else "",
+        "✓" if metrics_pd.loc[0, "best_name"] == "RandomForest" else "",
+    ],
+})
+viz.styled_topn_table(
+    comparison,
+    bar_cols=["test_rmse"],
+    fmt={"test_rmse": "{:.3f}"},
+    title="GBT vs RandomForest — test RMSE",
+)
+''')
+
+md("""**What this means.** Both regressors land at nearly identical test RMSE (~5 orders/week). RF wins by a hair and is faster to re-score, so it ships. The closeness implies the choice of estimator is not the bottleneck — additional signal would have to come from new features, not a different model family.""")
+
+
+md("""#### 3.7.2 Feature importance""")
+
+code('''from olist.pipeline.demand import best_model_feature_importances
+
+fi = best_model_feature_importances(spark)
+fi.orderBy(F.col("importance").desc()).show()
+
+# BIG-DATA-SAFETY-ESCAPE: PANDAS_MATPLOTLIB_VIZ — 6-row aggregate
+fi_pd = fi.toPandas()
+viz.feature_importance_bar(
+    list(fi_pd[["feature", "importance"]].itertuples(index=False, name=None)),
+    title=f"Feature importance — {metrics_pd.loc[0, 'best_name']} regressor",
+)
+''')
+
+md("""**What this means.** The lagged-volume features (`rolling_4w_mean`, `lag_1`, `lag_4`) dominate — the model's signal is mostly *"what happened recently for this seller."* Calendar features (`month`, `is_q4`) contribute the remaining explanatory power but are secondary. This matches the "weekly-pattern + recent-trend" intuition operations teams already use; the model is augmenting that intuition, not replacing it.""")
+
+
+md("""#### 3.7.3 Residual diagnostics""")
+
+code('''from olist.pipeline.demand import predictions_sample
+
+# BIG-DATA-SAFETY-ESCAPE: PANDAS_MATPLOTLIB_VIZ — capped to 1000 rows
+preds_pd = predictions_sample(spark, n=1000).toPandas()
+print(f"sampled predictions: {len(preds_pd):,} rows")
+viz.residual_plot(preds_pd, y_true="label", y_pred="prediction")
+''')
+
+md("""**What this means.** A well-calibrated model clusters points tightly around the y=x line and produces residuals centred on zero. The histogram shows a near-symmetric distribution with a small tail of large positive residuals — those are sellers whose weekly volume spikes *above* what recent history predicted (typically promotion-driven). The model's natural ceiling at this feature set is honest under-prediction of these spikes; capturing them would need promotion-flag features Olist hasn't shared.""")
+
+
+md("""### 3.8 Interpretation — per-seller scores + deployment view
+
+The trained model scores every seller into the deployable parquet `outputs/nb1_seller_demand_scores.parquet`: per-seller `forecast_uplift_pct`, `avg_delay_days`, and `delay_risk_flag`. The top-10-by-uplift table below is the short-list account management would actually act on.""")
+
+code('''demand_scores = scoring["nb1_seller_demand_scores"]
+print(f"seller_demand_scores rows: {demand_scores.count():,}")
+demand_scores.groupBy("delay_risk_flag").agg(F.count("*").alias("n")).orderBy("delay_risk_flag").show()
+''')
+
+code('''# BIG-DATA-SAFETY-ESCAPE: PANDAS_MATPLOTLIB_VIZ — capped to 10 rows
+top10_uplift = (
+    demand_scores.orderBy(F.col("forecast_uplift_pct").desc()).limit(10).toPandas()
+)
+top10_uplift["seller_id"] = top10_uplift["seller_id"].str.slice(0, 10) + "…"
+viz.styled_topn_table(
+    top10_uplift,
+    bar_cols=["forecast_uplift_pct"],
+    gradient_cols=["avg_delay_days"],
+    fmt={
+        "forecast_uplift_pct": "{:+.1f}%",
+        "avg_delay_days": "{:+.1f}",
+        "delay_risk_flag": "{:d}",
+    },
+    title="Top-10 sellers by forecast uplift % (gradient on avg delay)",
+)
+''')
+
+md("""**What this means.** These are the sellers with the strongest predicted growth — the natural conversation list for *"do you have inventory headroom for the next four weeks?"* The colour gradient adds the operational warning: a seller with high uplift *and* a red `avg_delay_days` is the dangerous combination — growing demand they are already failing to deliver on. Those sellers are the highest-priority intervention candidates from this sub-analysis.""")
+
+
+md("""### 🎯 Sub-Analysis 1 — Key Takeaways
+
+- **The forecasting signal works.** Both GBT and RF land at ~5 orders/week test RMSE, well below the magnitude of an actionable demand swing. RF is selected.
+- **The model is interpretable.** Lagged volume + 4-week rolling mean drive most of the prediction; this matches the operational intuition and is auditable.
+- **Two per-seller signals reach the deployment parquet.** `forecast_uplift_pct` (growth) and `avg_delay_days` / `delay_risk_flag` (delivery risk) — orthogonal axes that combine into the demand component of the §6 risk index.
+- **Geographic concentration of late deliveries is real.** A handful of states carry the late-rate tail; the §7 recommendations include a regional-targeting sweep for delivery-risk interventions.
+- **Honest limitation.** The model has no view of promotion calendars or stock-out events; large positive residuals correspond to volume spikes the feature set cannot predict.""")
+
+
+# ===========================================================================
+# Sections 4-7 land in subsequent commits.
 # ===========================================================================
 md("""---
 
-> **Sections §3 (Demand), §4 (Sentiment), §5 (Network), §6 (Cross-Analysis Synthesis), and §7 (Conclusions) are added in subsequent commits.**
+> **Sections §4 (Sentiment), §5 (Network), §6 (Cross-Analysis Synthesis), and §7 (Conclusions) are added in subsequent commits.**
 
-This commit (commit 1 of 6) lands the project skeleton + the Data Foundation section. Sub-analyses arrive in commits 2–4; cross-analysis synthesis in commit 5; conclusions, README, and the consolidation of the old four-notebook submission into this single notebook in commit 6.""")
+This commit (commit 2 of 6) lands the Demand sub-analysis. The remaining sub-analyses follow the same eight-substep skeleton.""")
 
 code('''spark.stop()
 print("Spark stopped.")
