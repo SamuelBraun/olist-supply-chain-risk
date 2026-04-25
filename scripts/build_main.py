@@ -1,21 +1,19 @@
-"""Emit notebooks/00_main.ipynb — the narrative orchestrator.
+"""Emit notebooks/main.ipynb — the unified comprehensive deliverable.
 
-Contract per docs/refactor_prompt.md §"Main notebook contract":
+Single-notebook architecture. Every transformation lives in
+src/olist/{pipeline,data_foundation,viz}.py; this script orchestrates
+them into a top-to-bottom narrative for both managers and DS reviewers.
 
-1. Executive summary
-2. Client context + 4 V's
-3. Data overview (aggregated Spark tables)
-4. Distributed-computing toolkit walkthrough (RDD, DataFrames, SparkSQL,
-   Pipelines, MLlib, Deep Learning, GraphFrames, Windows, EDA primitives)
-5. Analysis 1 — Demand      (calls pipeline.demand.*)
-6. Analysis 2 — Sentiment   (calls pipeline.sentiment.*)
-7. Analysis 3 — Network     (calls pipeline.network.*)
-8. Convergence — Seller Risk Index (calls pipeline.convergence.*)
-9. Recommendations for Olist
-10. Big-data safety log
-11. Reproducibility + rubric compliance (checks.run_all())
+Section layout:
+  1. Project Introduction
+  2. Data Foundation                 (NEW — schema diagram, shared keys, temporal coverage)
+  3. Sub-Analysis 1 — Demand Forecasting
+  4. Sub-Analysis 2 — Sentiment Analysis
+  5. Sub-Analysis 3 — Network Analysis
+  6. Cross-Analysis Synthesis
+  7. Conclusions & Limitations
 
-All logic lives in src/olist/; this notebook is the report surface.
+Sections 3–7 are added in subsequent commits; this commit lands §1 + §2 only.
 """
 
 from __future__ import annotations
@@ -25,7 +23,7 @@ from pathlib import Path
 import nbformat as nbf
 
 ROOT = Path(__file__).resolve().parents[1]
-OUT_NB = ROOT / "notebooks" / "00_main.ipynb"
+OUT_NB = ROOT / "notebooks" / "main.ipynb"
 
 CELLS: list[tuple[str, str]] = []
 
@@ -41,28 +39,31 @@ def code(src: str) -> None:
 # ===========================================================================
 # 0. Title
 # ===========================================================================
-md("""# Olist Supply Chain Risk Intelligence — Main Narrative
+md("""# Olist Supply-Chain Risk Intelligence
 
-**Consulting client:** Olist (Brazilian e-commerce marketplace)
-**Consulting team:** BigDataCompany
-**Audience:** Olist management (non-technical)
+**Client:** Olist (Brazilian e-commerce marketplace) · **Consulting team:** BigDataCompany · **Audience:** Olist management + technical reviewers
 
-Top-to-bottom: client problem → why this is a big-data problem (the 4 V's) → data → three PySpark analyses (demand, sentiment, network) → converged Seller Risk Index → recommendations. Every Spark primitive the rubric requires renders visibly below; transformation logic lives in `src/olist/pipeline/*.py`.
+This notebook is the *single comprehensive deliverable* for the project. It walks top-to-bottom through three PySpark sub-analyses — **demand forecasting**, **sentiment analysis**, and **supply-network graph** — that converge into one per-seller **Seller Risk Index**. Every section is written so a manager can skim the markdown and the headline charts; a data scientist can drop into any cell and inspect the methodology.
 
-**How to read this notebook.** A manager can skim the markdown and the headline tables/charts; a senior data scientist can read the same notebook and inspect methodological details via the inline `inspect.getsource(...)` dumps, Pipeline stages, query text, and metrics.
+---
 
-**Reproducibility.** All six `outputs/*.parquet` artefacts are committed with the notebook; `outputs/.cache_manifest.json` tracks the fingerprint of the code that produced each one. Reruns on unchanged code skip the compute and re-read parquet — on a warm cache this notebook executes in under a minute.""")
+### How to read this notebook
+
+- **Plain-language summaries** open every section and follow every chart (look for the *"What this means"* boxes).
+- **Code cells** are kept short — heavy lifting lives in `src/olist/`. `inspect.getsource(...)` dumps the source of a function on demand so the reviewer can audit method without leaving the notebook.
+- **Each sub-analysis** (§3, §4, §5) is a complete CRISP-DM-inspired data-science workflow: framing → EDA → cleaning → preprocessing → feature engineering → modelling → evaluation → interpretation, with a **Key Takeaways** box at the end.
+- **Cross-analysis synthesis** (§6) connects the three sub-analyses into one decision-ready risk index plus an archetype map.
+- **Conclusions** (§7) summarise findings, recommendations, limitations, and the big-data-safety log.""")
+
 
 # ===========================================================================
-# 1. Executive summary
+# Boot
 # ===========================================================================
-md("""## 1. Executive summary
+md("""## 0. Boot — `SparkSession`
 
-Three PySpark analyses converge into a single per-seller **Seller Risk Index** that flags sellers at risk of becoming a supply-chain failure *before* customers are affected. The three signals — demand pressure, customer sentiment, and network centrality — are normalised and weighted 0.35 / 0.35 / 0.30 into a single 0–1 risk score with CRITICAL / WARNING / SAFE bands.
+`spark.driver.memory = 6g`, `shuffle_partitions = 64`, time zone `America/Sao_Paulo`, GraphFrames jar `0.8.3-spark3.5-s_2.12` — all configured in `src/olist/spark_session.py`.""")
 
-**Headline.** Out of roughly 3,000 active Olist sellers, the risk-tail clusters at WARNING, not CRITICAL — the live counts are computed below.""")
-
-code('''import os, sys, inspect, time
+code('''import os, sys, inspect
 from pathlib import Path
 
 os.environ["JAVA_HOME"] = "/opt/homebrew/opt/openjdk@11/libexec/openjdk.jdk/Contents/Home"
@@ -70,445 +71,194 @@ os.environ["PYSPARK_PYTHON"] = sys.executable
 os.environ["PYSPARK_DRIVER_PYTHON"] = sys.executable
 
 from olist.spark_session import get_spark
-spark = get_spark("olist-main", with_graphframes=True)
-spark.sparkContext.setLogLevel("WARN")
-print("Spark", spark.version, "| driver python:", sys.executable)
-''')
-
-code('''from olist.pipeline.convergence import build_seller_risk_index, risk_band_counts
 from pyspark.sql import functions as F
 
-# This will be a cache hit if the convergence step has already run against the
-# current code + inputs. Otherwise it runs end-to-end — cache builds bottom-up.
-risk = build_seller_risk_index(spark)
-print("Risk-band counts (live from outputs/seller_risk_index.parquet):")
-risk_band_counts(risk).show()
-print(f"Total scored sellers: {risk.count():,}")
+spark = get_spark("olist-main", with_graphframes=True)
+spark.sparkContext.setLogLevel("WARN")
+print("Spark", spark.version)
 ''')
+
 
 # ===========================================================================
-# 2. Client context + 4 V's
+# 1. Project Introduction
 # ===========================================================================
-md("""## 2. Client context — why this is a big-data problem
+md("""## 1. Project Introduction
 
-Olist's marketplace data currently fits on a laptop, but the analytical shape of the problem is unambiguously big-data:
+### 1.1 The consulting question
 
-- **Volume.** A marketplace-peer platform (Mercado Libre, Shopee) operates at 10–1000× the scale of this sample dataset. Joins across `orders ⋈ order_items ⋈ reviews ⋈ customers ⋈ sellers` are shuffle-heavy; a single-node pandas approach would hit memory pressure and GC death at ≥10 M orders. Spark partitions the shuffles across workers by construction.
+Olist is a marketplace platform: thousands of independent Brazilian sellers ship to millions of customers under one storefront. The core operational risk is **silent seller failure** — a seller starts shipping late, or accumulates negative reviews, or sits in a part of the network where their failure cascades widely, and Olist only finds out *after* customers leave.
 
-- **Velocity.** New orders, reviews, and deliveries arrive continuously. The lead-indicator analysis (§6) computes weekly rolling sentiment vs. weekly volume; at production velocity this becomes a Spark Structured Streaming job with event-time windows — Window functions we use here are the same primitives.
+> **The question we were hired to answer.** *Which sellers should Olist's account-management team intervene on this week to prevent quietly-developing supply-chain failures?*
 
-- **Variety.** Nine interconnected tables: transactional (`orders`, `order_items`, `payments`), dimensional (`customers`, `sellers`, `products`), geospatial (`geolocation`), free-text (`reviews`), taxonomy (`category_translation`). Spark handles them via explicit `StructType` schemas without `inferSchema` passes.
+### 1.2 Three sub-research-questions
 
-- **Veracity.** Missing `order_delivered_customer_date` (≈3 % of orders), Portuguese reviews with null comments (>50 %), zip-prefix-aggregated geolocation (one centroid per prefix). Every drop is logged in `docs/decisions_log.md` with its row count.
+To answer the operational question above, we decompose it into three independent data-science problems. Each is solved end-to-end, then fused into a single per-seller risk score.
 
-**Where a single-node pandas approach would break.** (a) The 4-way `order_lines` join materialises ~113k rows now but would be ~100 M at marketplace-peer scale — an in-memory pandas merge there would swap to disk. (b) GraphFrames PageRank on ~100k vertices already needs 6 GB driver heap; `networkx` would be 10× slower at this size and unusable at 1 M vertices. (c) NLP over 43k Portuguese reviews fits in pandas here; at 100 M reviews the tokenisation itself would need a distributed executor (spark-nlp or Petastorm-streamed PyTorch).
+| # | Sub-question | Method | Output signal |
+|---|---|---|---|
+| 1 | **Demand pressure & delivery risk.** Is this seller's order volume rising or falling, and are they shipping on time? | PySpark MLlib regressors (GBT vs RandomForest) under 3-fold CV on weekly volume features | `forecast_uplift_pct`, `avg_delay_days` |
+| 2 | **Customer sentiment trend.** Are reviews getting more positive or negative for this seller, and does sentiment lead volume? | TF-IDF + Logistic Regression (Spark ML Pipeline) + PyTorch LSTM, plus 6-week rolling Window aggregation | `avg_sentiment_score`, `sentiment_trend_6wk` |
+| 3 | **Network centrality & contagion.** Is this seller a structural hub whose failure would disrupt many customers? | GraphFrames PageRank + connected components + motif `(a)→c←(b)` + BFS + delayed-subgraph PageRank | `pagerank_score`, `network_risk_score` |
 
-Every function in `src/olist/pipeline/*` was written to work *identically* at 100× the current row count — no `collect`/`toPandas` on a non-aggregated DataFrame, all small lookups broadcast, hot DataFrames cached once, every `orderBy` paired with a `limit`.""")
+### 1.3 Methodology — why PySpark
 
-# ===========================================================================
-# 3. Data overview
-# ===========================================================================
-md("""## 3. Data overview
+The Olist sample dataset fits on a laptop (~100k orders, ~100k reviews), but the **analytical shape** is unambiguously big-data. A marketplace-peer platform (Mercado Libre, Shopee) operates at 10–1000× this scale, and any tool we build for Olist must run there too.
 
-Nine CSVs under `data/`, loaded via explicit-schema typed loaders in `src/olist/loaders.py`. The row counts below are a Spark-native audit — no `inferSchema`, no driver-side materialisation of the underlying rows.""")
+So every transformation lives in PySpark:
+- **Distributed joins.** `orders ⋈ order_items ⋈ reviews ⋈ customers ⋈ sellers` is shuffle-heavy; pandas would swap to disk above ~10 M rows. Spark partitions the shuffle by key.
+- **Distributed ML.** `pyspark.ml.Pipeline` + `CrossValidator` train regressors and classifiers across executors. Models survive a 100× scale-up unchanged.
+- **Graph algorithms at scale.** GraphFrames runs PageRank, connected components, and motif-finding on a JVM-backed graph; `networkx` would be 10× slower on this graph and unusable at 1 M vertices.
 
-code('''from olist.pipeline.demand import load_core_tables
-from olist.loaders import load_geolocation, load_order_payments
+Everywhere we *had* to step outside PySpark (PyTorch LSTM; matplotlib charts; tiny driver-side `collect()` for top-N tables) is **catalogued** in `docs/big_data_safety_log.md` with the production alternative and why the escape is acceptable at this size. §7 renders this log inline.
 
-tables = load_core_tables(spark)
-tables["geolocation"] = load_geolocation(spark)
-tables["order_payments"] = load_order_payments(spark)
+### 1.4 How to read this notebook (recap)
 
-print("Source table row counts:")
-for name, df in sorted(tables.items()):
-    print(f"  {name:>24}: {df.count():>10,}")
-''')
+- **Manager view:** read the markdown headers, skip to the *"What this means"* boxes after each chart, and read the **Key Takeaways** at the end of each sub-analysis.
+- **DS-review view:** every code cell is one to a handful of lines; methodology is in `src/olist/`; PySpark primitives are demonstrated visibly throughout (RDD chain in §3.1, SparkSQL queries in §3.4, ML Pipelines in §3.6 / §4.5, MLlib CV metrics, Window functions in §3.5 / §4.5, GraphFrames in §5.5–§5.6, EDA primitives in §3.2 / §4.2).""")
 
-md("""**Dropped-row audit** — decisions logged in `docs/decisions_log.md`:
-
-- ≈2,965 orders dropped because `order_delivered_customer_date IS NULL` (in-transit / cancelled); retained ~96,476 delivered orders.
-- Neutral review scores (==3) dropped; ~82 / 18 positive / negative class balance remains.
-- Geolocation aggregated to one centroid per zip prefix (19,015 rows) and broadcast thereafter.""")
 
 # ===========================================================================
-# 4. Distributed computing toolkit walkthrough
+# 2. Data Foundation
 # ===========================================================================
-md("""## 4. Distributed-computing toolkit — the Spark primitives in use
+md("""## 2. Data Foundation
 
-A deliberate walkthrough of the primitives the course rubric asks us to demonstrate, each illustrated by a real call into the pipeline with visible output.""")
+Before we dive into the three sub-analyses, we make the *relational shape of the problem* visible. The Olist dataset is **nine interconnected CSVs** that share keys in non-obvious ways; getting the joins right (and using the right key — e.g. `customer_unique_id` not `customer_id` for "person") determines whether the downstream analyses are correct.
 
-# --- RDDs ---
-md("""### 4.1 RDDs — `textFile → filter/map/reduceByKey`
+This section answers four questions:
 
-The lowest-level Spark primitive. We read the raw orders CSV as a text RDD, filter the header, map each line to `(purchase_date, 1)`, reduce by key, and rebuild a typed DataFrame with an explicit schema. This is the idiomatic Spark pattern for ingesting arbitrarily-formatted text before moving into the DataFrame API.
+1. **Which tables exist, what role do they play, and how big are they?**
+2. **How are they connected?** (schema diagram + shared-key cardinality)
+3. **Do their time ranges overlap?** (so cross-table time-series joins are valid)
+4. **What did we drop, and why?** (a single styled cleaning audit)""")
 
-The chain is printed below via `inspect.getsource` — single source of truth in `src/olist/pipeline/demand.py`, no duplicated logic.""")
 
-code('''from olist.pipeline.demand import rdd_daily_order_count
-print(inspect.getsource(rdd_daily_order_count))
-''')
+md("""### 2.1 The nine source tables
 
-code('''daily_rdd_df = rdd_daily_order_count(spark)
-print("RDD-derived daily rows:", daily_rdd_df.count())
-daily_rdd_df.orderBy("purchase_date").limit(5).show()
-''')
+Each table loaded with an explicit `StructType` from `src/olist/schemas.py` (no `inferSchema` — that would force an extra full-file pass per table, and break at scale). The table below is the *registry* — single source of truth for the rest of the project.""")
 
-# --- DataFrames & SparkSQL ---
-md("""### 4.2 DataFrames + SparkSQL — temp-view queries
-
-Explicit `StructType` schemas are declared once in `src/olist/schemas.py`; every typed loader applies them (no `inferSchema`). The three required SparkSQL queries run against a temp view registered from `order_lines`.""")
-
-code('''from olist.pipeline.demand import build_order_lines, sparksql_queries
-
-order_lines = build_order_lines(spark)
-print("order_lines rows:", order_lines.count())
-
-queries = sparksql_queries(order_lines)
-for name, (sql, result) in queries.items():
-    print(f"\\n--- {name} ---")
-    print(sql.strip())
-    result.show(truncate=False)
-''')
-
-# --- Pipelines & Data Engineering ---
-md("""### 4.3 Pipelines & Data Engineering
-
-Every reusable transformation chain goes through `pyspark.ml.Pipeline`. The NB1 feature pipeline (Imputer → VectorAssembler) and the NB2 NLP pipeline (Tokenizer → StopWordsRemover → HashingTF → IDF → LogisticRegression) are the two canonical examples.""")
-
-code('''from olist.pipeline.demand import build_feature_pipeline
-from olist.pipeline.sentiment import build_nlp_pipeline
-
-print("Demand feature Pipeline (NB1):")
-for stage in build_feature_pipeline().getStages():
-    print(" ", stage)
-print("\\nNLP Pipeline (NB2):")
-for stage in build_nlp_pipeline().getStages():
-    print(" ", stage)
-''')
-
-# --- MLlib ---
-md("""### 4.4 MLlib — `CrossValidator(folds=3)` over `GBTRegressor` + `RandomForestRegressor`
-
-`RegressionEvaluator(metricName='rmse')`. Results are cached via `@step`; metrics re-read from parquet on warm cache.""")
-
-code('''from olist.pipeline.demand import fit_and_score
-
-demand_artefacts = fit_and_score(spark)
-print("--- GBT vs RF metrics ---")
-demand_artefacts["demand_metrics"].show()
-''')
-
-# --- Deep Learning ---
-md("""### 4.5 Deep Learning — PyTorch LSTM (justified escape)
-
-The LSTM is the one non-Spark primitive we train. It lives in `pipeline.sentiment.train_lstm`; `train_lstm_cached` wraps it in `@step` so reruns skip the ~3-minute training loop and re-read the metrics parquet. The justification (why not spark-nlp; why acceptable at this scale) is in `docs/big_data_safety_log.md` (IDs `LSTM_TO_PANDAS`, `LSTM_PYTORCH`).""")
-
-code('''from olist.pipeline.sentiment import train_lstm_cached
-
-lstm_metrics = train_lstm_cached(spark)
-lstm_metrics.show(truncate=False)
-''')
-
-# --- GraphFrames ---
-md("""### 4.6 GraphFrames
-
-Vertices = sellers ∪ `customer_unique_id`; edges = bidirectional `purchase` + `serves`. Algorithms: PageRank, connectedComponents (GraphX backend, memory-efficient), motif `(a)-[]->(c)<-[]-(b)`, BFS, induced high-delay subgraph. Each algorithm is its own `@step`.""")
-
-code('''from olist.pipeline.network import (
-    build_graph_frame, compute_pagerank, compute_connected_components,
-    compute_shared_customer_motifs,
-)
-g = build_graph_frame(spark)
-print("GraphFrame:", g)
-print("\\nTop 5 PageRank sellers:")
-compute_pagerank(spark).orderBy(F.col("pagerank_score").desc()).limit(5).show(truncate=False)
-''')
-
-# --- Window functions ---
-md("""### 4.7 Window functions
-
-Used throughout: `Window.partitionBy(seller_id).orderBy(year_week).rowsBetween(...)` for lag features (NB1), rolling 6-week sentiment mean (NB2), per-seller "last week" row in trend computation. Shown here via the weekly-features Pipeline output.""")
-
-code('''from olist.pipeline.demand import add_weekly_features, build_weekly_order_volume, FEATURE_COLS
-weekly = build_weekly_order_volume(spark)
-weekly_features = add_weekly_features(weekly)
-weekly_features.select("seller_id", "year_week", "weekly_order_count", *FEATURE_COLS).limit(5).show()
-''')
-
-# --- EDA primitives ---
-md("""### 4.8 EDA primitives — `approxQuantile` + `approx_count_distinct` + `broadcast`
-
-Big-data-safe alternatives to `describe()` and `distinct().count()`. The `sellers`, `products`, and `geo_centroids` lookups (all ≤10 MB) are broadcast to every join per CLAUDE.md §3.""")
-
-code('''from olist.pipeline.demand import eda_stats
-stats = eda_stats(order_lines)
-print("price quantiles (p25/p50/p75/p95):", stats["price_quantiles"])
-print("delay quantiles (p25/p50/p75/p95):", stats["delay_quantiles"])
-stats["approx_counts"].show()
-''')
-
-md("""### 4.9 Streaming (bonus)
-
-Not demonstrated in this pass — the three required per-seller parquets are green, so the bonus streaming section was skipped in favour of sharpening the main-notebook narrative. Structured Streaming would extend `build_weekly_order_volume` to `spark.readStream...window(...).groupBy(...)` with the same Window primitives shown above.""")
-
-# ===========================================================================
-# 5. Analysis 1 — Demand
-# ===========================================================================
-md("""## 5. Analysis 1 — Demand pressure + delivery risk
-
-**Question.** When and where will demand spike, and which sellers are already struggling to keep up?
-
-We aggregate order lines to weekly volume per seller, engineer lag + rolling features, and forecast next-week volume with both GBT and RandomForest under 3-fold cross-validation. Per-seller delivery delay becomes an orthogonal risk flag. The winning model's per-seller forecast uplift and avg delay are persisted to `outputs/nb1_seller_demand_scores.parquet`.""")
-
-code('''demand_scores = demand_artefacts["nb1_seller_demand_scores"]
-print("Top 5 sellers by forecast uplift %:")
-demand_scores.orderBy(F.col("forecast_uplift_pct").desc()).limit(5).show(truncate=False)
-print("\\nTop 5 sellers by avg delay days:")
-demand_scores.orderBy(F.col("avg_delay_days").desc()).limit(5).show(truncate=False)
-''')
-
-# ===========================================================================
-# 6. Analysis 2 — Sentiment + lead indicator
-# ===========================================================================
-md("""## 6. Analysis 2 — Customer sentiment + lead indicator
-
-**Question.** Can we detect a seller in trouble *before* a sales drop? We classify Portuguese review text (LogReg via ML Pipeline, LSTM in PyTorch), roll sentiment into 6-week windows per seller, and cross-correlate weekly sentiment change vs weekly volume change at lags 0–8 weeks.""")
-
-code('''from olist.pipeline.sentiment import build_seller_sentiment_scores, build_lead_indicator_lags, peak_lag
-
-sentiment_scores = build_seller_sentiment_scores(spark)
-print("sentiment_declining breakdown:")
-sentiment_scores.groupBy("sentiment_declining").agg(F.count("*").alias("n")).orderBy("sentiment_declining").show()
-
-print("\\nTop 5 declining sellers (most negative 6wk trend):")
-sentiment_scores.orderBy(F.col("sentiment_trend_6wk").asc()).limit(5).show(truncate=False)
-
-lag_df = build_lead_indicator_lags(spark)
-print("\\nLag-k correlation: sentiment change at t vs volume change at t+k")
-lag_df.show()
-peak_k, peak_rho = peak_lag(lag_df)
-print(f"Peak |corr| at lag={peak_k} weeks (corr={peak_rho:.4f})")
-''')
-
-md("""**Honest finding.** Across lags 0–8, the correlation is weak (|corr| ≈ 0.015 at the peak). Sentiment is *not* a strong leading indicator of volume at this sample size — reported in the presentation as a caveat, not a headline.""")
-
-code('''# BIG-DATA-SAFETY-ESCAPE: LEAD_INDICATOR_VIZ
-import matplotlib.pyplot as plt
-
-lag_pd = lag_df.toPandas()
-fig, ax = plt.subplots(figsize=(6, 3.5))
-ax.bar(lag_pd["lag"], lag_pd["corr"], color="#4C72B0")
-ax.axhline(0, color="grey", linewidth=0.8)
-ax.set_xlabel("Lag k (weeks)")
-ax.set_ylabel("Pearson correlation")
-ax.set_title("Does sentiment decline precede volume decline?")
-ax.set_xticks(lag_pd["lag"])
-plt.tight_layout()
-plt.show()
-''')
-
-# ===========================================================================
-# 7. Analysis 3 — Supply network
-# ===========================================================================
-md("""## 7. Analysis 3 — Supply-network graph
-
-**Question.** Which sellers are single points of failure?
-
-The marketplace is modelled as a graph: vertices are sellers + unique customers; edges are bidirectional `purchase` + `serves` relations weighted by order-item count. PageRank measures seller centrality; connected components flag isolates; the `(a)-[]->(c)<-[]-(b)` motif surfaces shared-customer seller pairs; BFS finds backup sellers for each high-centrality seller; a high-delay induced subgraph re-runs PageRank to flag sellers central to late shipments.""")
-
-code('''from olist.pipeline.network import (
-    build_seller_network_scores, compute_shared_customer_motifs,
-    compute_bfs_backups, compute_delayed_subgraph_pagerank,
-)
-network_scores = build_seller_network_scores(spark)
-print("Top 5 sellers by PageRank:")
-network_scores.orderBy(F.col("pagerank_score").desc()).limit(5).show(truncate=False)
-
-print("\\nTop 5 shared-customer seller pairs:")
-compute_shared_customer_motifs(spark).orderBy(
-    F.col("n_shared_customers").desc()
-).limit(5).show(truncate=False)
-
-print("\\nBFS backup sellers for top-10 PageRank seeds:")
-compute_bfs_backups(spark).show(truncate=False)
-
-print("\\nTop 5 sellers by delayed-subgraph PageRank:")
-compute_delayed_subgraph_pagerank(spark).orderBy(
-    F.col("network_risk_score").desc()
-).limit(5).show(truncate=False)
-''')
-
-# ===========================================================================
-# 8. Convergence
-# ===========================================================================
-md("""## 8. Convergence — Seller Risk Index
-
-Inner-join the three per-seller parquets on `seller_id`; min-max normalise each component (sentiment inverted so higher = worse); weight 0.35 · demand + 0.35 · sentiment + 0.30 · network. Band CRITICAL > 0.75, SAFE < 0.40, WARNING otherwise.""")
-
-code('''from olist.pipeline.convergence import (
-    build_seller_risk_index, risk_band_counts,
-    top50_for_quadrant, state_mean_risk,
-    RISK_WEIGHTS, RISK_CRITICAL_THRESHOLD, RISK_SAFE_THRESHOLD,
-)
+code('''from olist.data_foundation import table_overview, TABLE_REGISTRY
 from olist import viz
 
-risk = build_seller_risk_index(spark)
-print(f"Weights: {RISK_WEIGHTS}   Thresholds: CRITICAL > {RISK_CRITICAL_THRESHOLD}, SAFE < {RISK_SAFE_THRESHOLD}")
-print("Risk-band counts:")
-risk_band_counts(risk).show()
-print(f"Total scored sellers: {risk.count():,}")
-''')
-
-md("""### Top-20 highest-risk sellers — deployment-ready table
-
-The account-management short-list: the 20 sellers where intervention will move the most aggregate risk. Bar embedded on `risk_score` so the in-band spread is visible; gradient on the three normalised components shows *which* signal is driving each seller's placement (delay-heavy vs sentiment-heavy vs network-heavy).""")
-
-code('''# BIG-DATA-SAFETY-ESCAPE: PANDAS_MATPLOTLIB_VIZ — capped to 20 rows
-top20_risk = (
-    risk.orderBy(F.col("risk_score").desc())
-    .limit(20)
-    .select(
-        "seller_id", "seller_state", "risk_score", "risk_class",
-        "demand_norm", "sentiment_norm", "network_norm",
-    )
-    .toPandas()
-)
-top20_risk["seller_id"] = top20_risk["seller_id"].str.slice(0, 10) + "…"
+# BIG-DATA-SAFETY-ESCAPE: SMALL_SUMMARY_COLLECT — 9-row registry summary
+overview = table_overview(spark)
+overview.show(truncate=False)
+overview_pd = overview.toPandas()
 viz.styled_topn_table(
-    top20_risk,
-    bar_cols=["risk_score"],
-    gradient_cols=["demand_norm", "sentiment_norm", "network_norm"],
-    fmt={
-        "risk_score": "{:.3f}",
-        "demand_norm": "{:.3f}",
-        "sentiment_norm": "{:.3f}",
-        "network_norm": "{:.3f}",
-    },
-    title="Top-20 highest-risk sellers — risk_score + normalised component breakdown",
+    overview_pd,
+    bar_cols=["n_rows"],
+    fmt={"n_rows": "{:,d}", "n_cols": "{:d}"},
+    title="The nine Olist source tables",
 )
 ''')
 
-md("""### Risk-band donut + quadrant scatter + state bar
+md("""**What this means.** Three transactional tables (`orders`, `order_items`, `order_payments`) carry the events; three dimensional tables (`customers`, `sellers`, `products`) describe the entities; one free-text table (`order_reviews`) carries customer voice; one geospatial table (`geolocation`) provides locations; one taxonomy (`category_translation`) maps Portuguese → English category names. The volume is dominated by `geolocation` (~1 M rows) — every other table is well under 200k rows, so joins on dimensional tables are broadcast-friendly.""")
 
-Three management-ready visuals: (1) how many sellers land in each band; (2) where the top-50 sellers sit on the demand × sentiment plane, weighted by PageRank; (3) which Brazilian states carry the highest mean risk.""")
 
-code('''# BIG-DATA-SAFETY-ESCAPE: SMALL_SUMMARY_COLLECT — 3-row aggregate
-band_counts_pd = risk_band_counts(risk).toPandas()
-viz.risk_band_donut(band_counts_pd)
+md("""### 2.2 Schema diagram — how the tables connect
+
+The diagram below shows the foreign-key relationships. Boxes are coloured by role; arrows point from the foreign-key holder to the referenced table; the label on each arrow names the join key.""")
+
+code('''# BIG-DATA-SAFETY-ESCAPE: PANDAS_MATPLOTLIB_VIZ — pure-matplotlib diagram, no data
+viz.schema_diagram()
 ''')
 
-code('''# BIG-DATA-SAFETY-ESCAPE: TOP50_VIZ — 50-row pandas frame produced by convergence helper
-top50 = top50_for_quadrant(risk)
-viz.quadrant_scatter(
-    top50,
-    x="demand_norm",
-    y="sentiment_norm",
-    size="pagerank_score",
-    color="risk_score",
-    title="Top-50 risk quadrant — bubble = PageRank, colour = risk_score",
-    xlabel="demand_norm (higher = longer avg delay)",
-    ylabel="sentiment_norm (higher = worse sentiment)",
+md("""**What this means.** Three "hub" relationships drive the project:
+
+1. **`order_items` is the fact table.** It links three dimensions (`orders`, `products`, `sellers`) into one row-per-order-line — every demand and network analysis joins through this table.
+2. **`customers` is the bridge between people and orders.** A returning customer has *one* `customer_unique_id` but *many* `customer_id`s (one per order they placed). Using `customer_unique_id` for graph vertices is what makes the shared-customer motif in §5 surface real repeat-customer behaviour.
+3. **Geolocation is many-to-one per zip prefix.** We aggregate to centroids once and broadcast — see §2.5 cleaning audit.""")
+
+
+md("""### 2.3 Shared-key cardinality
+
+The same key column lives in different tables with very different cardinalities. The chart below uses `approx_count_distinct` (HyperLogLog — big-data-safe) to count distinct values of each shared key per table.""")
+
+code('''from olist.data_foundation import shared_key_cardinality
+
+# BIG-DATA-SAFETY-ESCAPE: SMALL_SUMMARY_COLLECT — 14-row aggregate (≤6 keys × ≤4 tables)
+keys_df = shared_key_cardinality(spark)
+keys_df.show(truncate=False)
+
+# BIG-DATA-SAFETY-ESCAPE: PANDAS_MATPLOTLIB_VIZ — small aggregate, log-scale bar chart
+keys_pd = keys_df.toPandas()
+viz.shared_key_grouped_bar(keys_pd)
+''')
+
+md("""**What this means.** Four observations from the chart:
+
+- **`customer_id` and `customer_unique_id` differ by ≈3,000.** That's the count of repeat customers — same person, multiple orders.
+- **`order_id` is well-defined.** It appears at the same cardinality in `orders`, `order_reviews`, and `order_payments` (allowing for some null reviews).
+- **`order_items` carries multiple FKs at lower cardinality than `order_id`** — there are more `order_items` rows than `orders` (multi-item orders).
+- **`zip_prefix` lives in three tables.** Customers and sellers each have one prefix per row; `geolocation` carries 19,015 distinct prefixes with multiple addresses each — the many-to-one we collapse.""")
+
+
+md("""### 2.4 Temporal coverage
+
+For cross-table time-series joins (especially the lead-indicator analysis in §4 that aligns weekly sentiment with weekly demand), we need the timestamp ranges to overlap meaningfully. The chart below shows the date range of every timestamp column in the schema.""")
+
+code('''from olist.data_foundation import temporal_coverage
+
+# BIG-DATA-SAFETY-ESCAPE: SMALL_SUMMARY_COLLECT — 8-row min/max per timestamp column
+temp_df = temporal_coverage(spark)
+temp_df.show(truncate=False)
+
+# BIG-DATA-SAFETY-ESCAPE: PANDAS_MATPLOTLIB_VIZ — 8-row aggregate
+temp_pd = temp_df.toPandas()
+viz.temporal_overlap_chart(temp_pd)
+''')
+
+md("""**What this means.** All transactional + review timestamps fall within the same window (roughly Sep 2016 → Oct 2018, with sparse data at both edges). The `n` annotations on the bars show how dense each column is. The takeaway for downstream work: the lead-indicator analysis (§4.7) safely aligns sentiment with volume on a common weekly grid; the demand forecast (§3) can use the full time range without worrying about silent table-level coverage gaps.""")
+
+
+md("""### 2.5 Cleaning audit
+
+Every cleaning step we take across the three sub-analyses is documented here as a single styled table. Numbers come from real Spark counts — no hard-coded magic.""")
+
+code('''from olist.data_foundation import cleaning_audit
+
+# BIG-DATA-SAFETY-ESCAPE: SMALL_SUMMARY_COLLECT — 4-row audit
+audit = cleaning_audit(spark)
+audit.show(truncate=False)
+
+# BIG-DATA-SAFETY-ESCAPE: PANDAS_MATPLOTLIB_VIZ — 4-row styled table
+audit_pd = audit.toPandas()
+viz.styled_topn_table(
+    audit_pd,
+    bar_cols=["dropped_rows"],
+    fmt={"input_rows": "{:,d}", "kept_rows": "{:,d}", "dropped_rows": "{:,d}"},
+    title="Cleaning audit — every row drop in the project, with reason",
+    hide_index=True,
 )
 ''')
 
-code('''# BIG-DATA-SAFETY-ESCAPE: STATE_AGG_VIZ — per-state aggregate (≤27 rows)
-state_risk = state_mean_risk(risk)
-viz.state_bar(
-    state_risk,
-    value_col="mean_risk",
-    label_col="seller_state",
-    title="Mean seller risk_score by Brazilian state",
-    sort="desc",
-)
-''')
+md("""**What this means.** Three lessons:
+
+- **Demand cleaning is gentle.** Only ~3% of orders are dropped (`order_delivered_customer_date IS NULL`); the forecasting + delivery-delay analyses still see the bulk of the marketplace.
+- **Sentiment cleaning is aggressive but principled.** Dropping neutral scores (`==3`) keeps the classifier bimodal; dropping NULL-comment rows is mandatory for the NLP pipeline. Both are documented above so the grader / reviewer can verify.
+- **Geolocation aggregation is the single biggest reduction.** ~1 M raw rows → 19,015 zip-prefix centroids. We never join the raw table to anything else — only the broadcast centroids.""")
+
+
+md("""### 2.6 Why this is a big-data problem (the 4 V's, condensed)
+
+- **Volume.** Marketplace-peer platforms operate at 10–1000× this scale; the joins above (5-way `orders × order_items × customers × sellers × products`) are shuffle-heavy at production scale.
+- **Velocity.** Orders, reviews, and deliveries arrive continuously; the weekly Window aggregations in §3 and §4 become Structured Streaming jobs at production velocity.
+- **Variety.** Nine interconnected tables with five distinct *roles* (transactional / dimensional / free-text / geospatial / taxonomy) — Spark handles them via explicit `StructType` schemas without `inferSchema` passes.
+- **Veracity.** Documented row-drops above; every cleaning decision recorded in `docs/decisions_log.md` with its row count.
+
+Every function in `src/olist/pipeline/*.py` was written to work *identically* at 100× the current row count — no `collect`/`toPandas` on a non-aggregated DataFrame, all small lookups broadcast, hot DataFrames cached once, every `orderBy` paired with a `limit`. The complete catalogue of escape hatches (and why each one is acceptable at this scale) is in `docs/big_data_safety_log.md`, rendered inline in §7.""")
+
 
 # ===========================================================================
-# 9. Recommendations
+# Sections 3-7 land in subsequent commits.
 # ===========================================================================
-md("""## 9. Recommendations for Olist
+md("""---
 
-Prioritised actions grounded in the numbers above — management-ready, no jargon:
+> **Sections §3 (Demand), §4 (Sentiment), §5 (Network), §6 (Cross-Analysis Synthesis), and §7 (Conclusions) are added in subsequent commits.**
 
-1. **Intervene on the WARNING band first.** CRITICAL is empty in this run; the WARNING sellers carry the full tail risk. Allocate account managers to the top-20 WARNING sellers — they are the list above in §8.
-
-2. **Delivery-delay outliers dominate the demand-risk signal.** Sellers with `delay_risk_flag = 1` (avg delay > 3 days) correlate strongly with high `demand_norm`. These are logistics problems, not capacity problems — fleet contracts and warehouse allocation, not seller training.
-
-3. **Sentiment is a weak leading indicator at this sample size.** The lead-indicator analysis found |corr| ≈ 0.015 — do not stake intervention triggers on sentiment alone. Use sentiment as a *confirming* signal alongside delay + network risk.
-
-4. **High-centrality sellers need an operational backup.** PageRank surfaces ~10 sellers whose loss would disrupt the most customers; BFS already identifies a nearest-neighbour backup seller for each. Set up dual-sourcing agreements for the top-10 by PageRank.
-
-5. **Geographic concentration of risk.** The state bar chart shows two or three Brazilian states with above-mean risk — worth a focused regional seller-health sweep.
-
-6. **Invest in a streaming upgrade if marketplace volume grows 10×.** The entire pipeline is big-data-safe by construction (see `docs/big_data_safety_log.md`); moving `nb1_weekly_order_volume` to Structured Streaming turns this notebook into a continuous early-warning system.""")
-
-# ===========================================================================
-# 10. Big-data safety log
-# ===========================================================================
-md("""## 10. Big-data safety log
-
-Every non-big-data-safe call in the codebase is catalogued in `docs/big_data_safety_log.md` and referenced by `# BIG-DATA-SAFETY-ESCAPE: <ID>` comments in `src/olist/pipeline/*.py`. Registry constants live in `src/olist/safety.py`.""")
-
-code('''from olist import safety
-print("Catalogued escape-hatch IDs (src/olist/safety.py):")
-for constant in safety.ALL_ESCAPES:
-    print(" ", constant)
-''')
-
-code('''# Render the safety log as a preview table (parsed from the markdown).
-import re
-safety_log = Path.cwd().parent / "docs" / "big_data_safety_log.md" if Path.cwd().name == "notebooks" else Path.cwd() / "docs" / "big_data_safety_log.md"
-rows = []
-for line in safety_log.read_text().splitlines():
-    m = re.match(r"\\| `([A-Z_0-9]+)` \\| ([^|]+) \\|", line)
-    if m:
-        rows.append(m.groups())
-print(f"{len(rows)} escape-hatch entries in docs/big_data_safety_log.md:")
-for rid, site in rows:
-    print(f"  {rid:<24}  {site.strip()[:80]}")
-''')
-
-# ===========================================================================
-# 11. Rubric compliance + manifest + environment
-# ===========================================================================
-md("""## 11. Reproducibility + rubric compliance
-
-Programmatic assertions: every rubric bullet is mapped to a check in `src/olist/checks.py::run_all()`. Fails loudly if a requirement is broken.""")
-
-code('''from olist.checks import run_all as run_compliance_checks
-
-checks_df = run_compliance_checks(spark)
-checks_df.show(truncate=False, n=50)
-''')
-
-md("""### Cache manifest summary — which steps ran vs. skipped this session""")
-
-code('''from olist.cache import manifest_summary
-import json
-
-summary = manifest_summary()
-print(f"{len(summary)} steps in outputs/.cache_manifest.json:")
-for entry in summary:
-    print(f"  {entry['step']:<38}  fp={entry['fingerprint']}  written={entry['written_at']}")
-''')
-
-md("""### Environment versions""")
-
-code('''import pyspark, sys
-print("python:  ", sys.version.split()[0])
-print("pyspark: ", pyspark.__version__)
-try:
-    import torch; print("torch:   ", torch.__version__)
-except Exception:
-    pass
-try:
-    import graphframes  # noqa
-    print("graphframes coordinate is set in spark_session.py")
-except Exception:
-    pass
-''')
+This commit (commit 1 of 6) lands the project skeleton + the Data Foundation section. Sub-analyses arrive in commits 2–4; cross-analysis synthesis in commit 5; conclusions, README, and the consolidation of the old four-notebook submission into this single notebook in commit 6.""")
 
 code('''spark.stop()
-print("\\nSpark stopped. Main notebook complete.")
+print("Spark stopped.")
 ''')
 
 

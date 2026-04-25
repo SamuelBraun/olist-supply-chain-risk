@@ -391,6 +391,149 @@ def confusion_matrix_heatmap(
     return fig
 
 
+def schema_diagram(title: str = "Olist schema — 9 tables, shared keys") -> Figure:
+    """Render the 9-table Olist schema as boxes + FK arrows.
+
+    Hardcoded layout (the schema is fixed). Box colour encodes role
+    (transactional / dimensional / free-text / geospatial / taxonomy).
+    """
+    role_color = {
+        "transactional": "#4C72B0",
+        "dimensional":   "#55A868",
+        "free-text":     "#DD8452",
+        "geospatial":    "#8172B2",
+        "taxonomy":      "#937860",
+    }
+    boxes = {
+        "orders":               (5.0, 5.5, "transactional"),
+        "order_items":          (5.0, 3.5, "transactional"),
+        "order_reviews":        (8.5, 5.5, "free-text"),
+        "order_payments":       (1.5, 5.5, "transactional"),
+        "customers":            (1.5, 7.5, "dimensional"),
+        "sellers":              (5.0, 1.5, "dimensional"),
+        "products":             (8.5, 3.5, "dimensional"),
+        "geolocation":          (1.5, 1.5, "geospatial"),
+        "category_translation": (8.5, 1.5, "taxonomy"),
+    }
+    edges = [
+        ("orders",         "customers",    "customer_id"),
+        ("order_items",    "orders",       "order_id"),
+        ("order_items",    "products",     "product_id"),
+        ("order_items",    "sellers",      "seller_id"),
+        ("order_reviews",  "orders",       "order_id"),
+        ("order_payments", "orders",       "order_id"),
+        ("products",       "category_translation", "product_category_name"),
+        ("customers",      "geolocation",  "zip_prefix"),
+        ("sellers",        "geolocation",  "zip_prefix"),
+    ]
+
+    fig, ax = plt.subplots(figsize=(11, 7.5))
+    box_w, box_h = 1.7, 0.7
+    for name, (x, y, role) in boxes.items():
+        ax.add_patch(
+            plt.Rectangle(
+                (x - box_w / 2, y - box_h / 2),
+                box_w, box_h,
+                facecolor=role_color[role],
+                edgecolor="black",
+                linewidth=0.8,
+                alpha=0.85,
+            )
+        )
+        ax.text(x, y, name, ha="center", va="center", fontsize=9.5, color="white", fontweight="bold")
+
+    for src_name, dst_name, key in edges:
+        x1, y1, _ = boxes[src_name]
+        x2, y2, _ = boxes[dst_name]
+        ax.annotate(
+            "",
+            xy=(x2, y2),
+            xytext=(x1, y1),
+            arrowprops=dict(arrowstyle="->", color="grey", lw=0.9, alpha=0.7),
+        )
+        midx = (x1 + x2) / 2
+        midy = (y1 + y2) / 2
+        ax.text(midx, midy, key, fontsize=7.5, color="black",
+                bbox=dict(boxstyle="round,pad=0.2", facecolor="white", edgecolor="none", alpha=0.85),
+                ha="center", va="center")
+
+    handles = [
+        plt.Rectangle((0, 0), 1, 1, facecolor=color, edgecolor="black", alpha=0.85, label=role)
+        for role, color in role_color.items()
+    ]
+    ax.legend(handles=handles, loc="upper center", bbox_to_anchor=(0.5, -0.02),
+              ncol=len(role_color), frameon=False, fontsize=9)
+
+    ax.set_xlim(0, 10)
+    ax.set_ylim(0.5, 8.5)
+    ax.set_aspect("equal")
+    ax.axis("off")
+    ax.set_title(title, fontsize=12, fontweight="bold", pad=10)
+    fig.tight_layout()
+    return fig
+
+
+def temporal_overlap_chart(df: pd.DataFrame, *, title: str = "Temporal coverage of timestamp columns") -> Figure:
+    """Gantt-style horizontal bars per (table, column) timestamp range.
+
+    `df` is the pandas frame returned by `data_foundation.temporal_coverage(...).toPandas()`
+    — columns: table, column, min_ts, max_ts, n_non_null.
+    """
+    data = df.copy()
+    data["label"] = data["table"] + " · " + data["column"]
+    data["min_ts"] = pd.to_datetime(data["min_ts"])
+    data["max_ts"] = pd.to_datetime(data["max_ts"])
+    data = data.sort_values("min_ts").reset_index(drop=True)
+
+    fig, ax = plt.subplots(figsize=(10, max(3, 0.45 * len(data) + 1)))
+    palette = sns.color_palette("deep", n_colors=data["table"].nunique())
+    table_to_color = {t: palette[i] for i, t in enumerate(sorted(data["table"].unique()))}
+    for i, row in data.iterrows():
+        width = (row["max_ts"] - row["min_ts"]).days
+        ax.barh(i, width, left=row["min_ts"], color=table_to_color[row["table"]],
+                edgecolor="white", height=0.7)
+        ax.text(row["max_ts"], i, f"  n={int(row['n_non_null']):,}", va="center", fontsize=8)
+    ax.set_yticks(range(len(data)))
+    ax.set_yticklabels(data["label"], fontsize=9)
+    ax.invert_yaxis()
+    ax.set_xlabel("date")
+    ax.set_title(title)
+    ax.grid(axis="x", alpha=0.3)
+    fig.autofmt_xdate()
+    fig.tight_layout()
+    return fig
+
+
+def shared_key_grouped_bar(df: pd.DataFrame, *, title: str = "Shared-key cardinality across tables") -> Figure:
+    """Grouped horizontal bar chart: for each shared key, distinct count per table.
+
+    `df` from `data_foundation.shared_key_cardinality(...).toPandas()` —
+    columns: shared_key, table, approx_distinct.
+    """
+    keys = sorted(df["shared_key"].unique())
+    tables = sorted(df["table"].unique())
+    table_to_color = {t: c for t, c in zip(tables, sns.color_palette("deep", n_colors=len(tables)))}
+
+    fig, ax = plt.subplots(figsize=(8.5, max(3, 0.45 * len(keys) * len(tables) + 1)))
+    bar_h = 0.8 / max(len(tables), 1)
+    y_positions = list(range(len(keys)))
+    for ti, t in enumerate(tables):
+        sub = df[df["table"] == t].set_index("shared_key").reindex(keys)
+        offsets = [y + (ti - (len(tables) - 1) / 2) * bar_h for y in y_positions]
+        ax.barh(offsets, sub["approx_distinct"].fillna(0).values,
+                height=bar_h, color=table_to_color[t], edgecolor="white", label=t)
+    ax.set_yticks(y_positions)
+    ax.set_yticklabels(keys)
+    ax.invert_yaxis()
+    ax.set_xscale("log")
+    ax.set_xlabel("approx_count_distinct (log scale)")
+    ax.set_title(title)
+    ax.grid(axis="x", alpha=0.3, which="both")
+    ax.legend(loc="lower right", fontsize=8, ncol=2)
+    fig.tight_layout()
+    return fig
+
+
 def residual_plot(
     df: pd.DataFrame,
     *,
