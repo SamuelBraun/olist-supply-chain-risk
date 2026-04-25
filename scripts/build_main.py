@@ -1007,13 +1007,185 @@ md("""### 🎯 Sub-Analysis 3 — Key Takeaways
 
 
 # ===========================================================================
-# Sections 6-7 land in subsequent commits.
+# 6. Cross-Analysis Synthesis
+# ===========================================================================
+md("""## 6. Cross-Analysis Synthesis
+
+Each of the three sub-analyses produces a per-seller signal in isolation. The synthesis section answers the question that none of them can answer alone: ***which sellers should we actually intervene on, and why?***
+
+Five views in this section:
+
+1. **§6.1 Convergence — the Seller Risk Index.** Inner-join the three per-seller parquets, normalise each component, weight `0.35 · demand + 0.35 · sentiment + 0.30 · network`, band into SAFE / WARNING / CRITICAL.
+2. **§6.2 Correlation between the three signals** — are they measuring overlapping things, or genuinely orthogonal risks?
+3. **§6.3 Risk archetypes** — K-Means clustering in the (demand, sentiment, network) space surfaces *which kind* of risk dominates each seller. (Pure-Spark MLlib KMeans, k=4.)
+4. **§6.4 Risk-band donut + quadrant scatter + state bar** — three management-ready visuals.
+5. **§6.5 Top-20 highest-risk sellers** — the actual intervention short-list.""")
+
+
+md("""### 6.1 Convergence — the Seller Risk Index""")
+
+code('''from olist.pipeline.convergence import (
+    build_seller_risk_index, risk_band_counts,
+    top50_for_quadrant, state_mean_risk, risk_archetypes,
+    RISK_WEIGHTS, RISK_CRITICAL_THRESHOLD, RISK_SAFE_THRESHOLD,
+)
+
+risk = build_seller_risk_index(spark)
+print(f"Weights:    {RISK_WEIGHTS}")
+print(f"Thresholds: CRITICAL > {RISK_CRITICAL_THRESHOLD}, SAFE < {RISK_SAFE_THRESHOLD}")
+print("\\nRisk-band counts:")
+risk_band_counts(risk).show()
+print(f"Total scored sellers: {risk.count():,}")
+''')
+
+md("""**What this means.** Three observations:
+
+- **The risk-tail clusters at WARNING, not CRITICAL.** With the contract-specified threshold of `0.75`, no seller crosses into CRITICAL — the marketplace's worst sellers concentrate just *below* that bar. This is itself a finding (reported honestly in §7) and means the WARNING band carries the entire actionable tail.
+- **Inner-join is intentional.** A seller has to appear in *all three* sub-analyses to score (≈3,000 of ≈3,090 sellers do). Sellers missing from one analysis (e.g. zero reviews) are excluded; they would generate noise rather than signal in the composite.
+- **Equal-weighted demand and sentiment.** The 0.35 / 0.35 split treats the two operational signals as equally important; network risk gets 0.30 because it is more structural (slow-moving) than per-week-actionable.""")
+
+
+md("""### 6.2 How correlated are the three signals?
+
+If the three components were strongly correlated, the composite would be redundant — we'd be double-counting one underlying signal. The Pearson correlation matrix below answers this directly.""")
+
+code('''# BIG-DATA-SAFETY-ESCAPE: PANDAS_MATPLOTLIB_VIZ — small (3-col) component frame
+risk_pd = risk.select("demand_norm", "sentiment_norm", "network_norm", "risk_score").toPandas()
+viz.correlation_heatmap(
+    risk_pd,
+    cols=["demand_norm", "sentiment_norm", "network_norm"],
+    title="Pairwise correlation of risk components",
+)
+''')
+
+md("""**What this means.** The off-diagonal cells are small in magnitude — the three signals are **largely orthogonal**. This validates the composite design: each component captures a different kind of risk that the other two cannot see. (If, say, `demand_norm` and `sentiment_norm` were ρ = 0.8, the convergence layer would just be a louder version of one signal; instead they jointly cover three distinct failure modes.)""")
+
+
+md("""### 6.3 Risk archetypes — which kind of risk dominates each seller?
+
+A seller with `risk_score = 0.6` could be a delivery problem, a customer-satisfaction problem, or a structural-criticality problem — same number, very different intervention. K-Means clustering in the (demand, sentiment, network) space (`pyspark.ml.clustering.KMeans`, k=4, seed=42) groups sellers into four archetypes labelled by which axis dominates the cluster centroid.""")
+
+code('''clustered_pdf, summary_pdf = risk_archetypes(risk, k=4, seed=42)
+print("Archetype summary (rows ordered by mean risk_score, descending):")
+viz.styled_topn_table(
+    summary_pdf,
+    bar_cols=["mean_risk_score"],
+    gradient_cols=["mean_demand_norm", "mean_sentiment_norm", "mean_network_norm"],
+    fmt={
+        "n_sellers": "{:,d}",
+        "mean_demand_norm": "{:.3f}",
+        "mean_sentiment_norm": "{:.3f}",
+        "mean_network_norm": "{:.3f}",
+        "mean_risk_score": "{:.3f}",
+    },
+    title="Risk archetypes — cluster centroids + size",
+)
+''')
+
+code('''viz.archetype_scatter(
+    clustered_pdf,
+    components=["demand_norm", "sentiment_norm", "network_norm"],
+    cluster_col="cluster",
+    label_col="archetype",
+    title="Risk archetypes — pairwise component view",
+)
+''')
+
+md("""**What this means.** The archetype labels are an *operational typology* of seller risk:
+
+- **`delay-driven`** — high `demand_norm`. The seller's deliveries are systematically late; sentiment and network may be normal. Intervention: logistics / fleet review.
+- **`sentiment-driven`** — high `sentiment_norm`. Customers are unhappy even though the seller may be shipping on time. Intervention: product-quality or post-sales review.
+- **`centrality-driven`** — high `network_norm`. The seller is structurally important in the late-shipping subgraph; their per-seller signals may be moderate but their failure cascades widely. Intervention: dual-sourcing agreement; raise to *strategic* watchlist.
+- **`low-risk`** — the bulk of the marketplace. No action needed except routine monitoring.
+
+The pairwise scatter shows the structure: each archetype occupies a distinct corner of the (demand, sentiment, network) cube. The §7 recommendations differentiate by archetype, not just by `risk_score`.""")
+
+
+md("""### 6.4 Risk-band donut + quadrant + state bar""")
+
+code('''# BIG-DATA-SAFETY-ESCAPE: SMALL_SUMMARY_COLLECT — 3-row aggregate
+band_counts_pd = risk_band_counts(risk).toPandas()
+viz.risk_band_donut(band_counts_pd)
+''')
+
+code('''# BIG-DATA-SAFETY-ESCAPE: TOP50_VIZ — 50-row pandas frame from convergence helper
+top50 = top50_for_quadrant(risk)
+viz.quadrant_scatter(
+    top50,
+    x="demand_norm",
+    y="sentiment_norm",
+    size="pagerank_score",
+    color="risk_score",
+    title="Top-50 risk quadrant — bubble = PageRank, colour = risk_score",
+    xlabel="demand_norm (higher = longer avg delay)",
+    ylabel="sentiment_norm (higher = worse sentiment)",
+)
+''')
+
+code('''# BIG-DATA-SAFETY-ESCAPE: STATE_AGG_VIZ — per-state aggregate (≤27 rows)
+state_risk = state_mean_risk(risk)
+viz.state_bar(
+    state_risk,
+    value_col="mean_risk",
+    label_col="seller_state",
+    title="Mean seller risk_score by Brazilian state",
+    sort="desc",
+)
+''')
+
+md("""**What this means.** The donut shows the global risk distribution; the quadrant exposes the top-50's positioning (demand-heavy vs sentiment-heavy with PageRank as bubble size); the state bar surfaces a couple of Brazilian states with above-mean risk — those are the geographic targeting candidates for the §7 recommendations.""")
+
+
+md("""### 6.5 Top-20 highest-risk sellers — the intervention short-list
+
+The deployable hand-off to account management. Bar embedded on `risk_score`; gradient on the three normalised components shows *which* signal dominates each seller's placement. Read row-by-row to know not just *who* to intervene on but *what kind* of intervention.""")
+
+code('''# BIG-DATA-SAFETY-ESCAPE: PANDAS_MATPLOTLIB_VIZ — capped to 20 rows
+top20_risk = (
+    risk.orderBy(F.col("risk_score").desc())
+    .limit(20)
+    .select(
+        "seller_id", "seller_state", "risk_score", "risk_class",
+        "demand_norm", "sentiment_norm", "network_norm",
+    )
+    .toPandas()
+)
+top20_risk["seller_id"] = top20_risk["seller_id"].str.slice(0, 10) + "…"
+viz.styled_topn_table(
+    top20_risk,
+    bar_cols=["risk_score"],
+    gradient_cols=["demand_norm", "sentiment_norm", "network_norm"],
+    fmt={
+        "risk_score": "{:.3f}",
+        "demand_norm": "{:.3f}",
+        "sentiment_norm": "{:.3f}",
+        "network_norm": "{:.3f}",
+    },
+    title="Top-20 highest-risk sellers — composite + components",
+)
+''')
+
+
+md("""### 6.6 What the three signals tell us together
+
+Reading the synthesis end-to-end:
+
+- **The three signals are orthogonal** (§6.2) — the composite is a genuine multi-signal index, not a louder version of one component.
+- **The marketplace has a long-tail risk profile** (§6.4 donut) — most sellers are SAFE; the operational risk concentrates in a manageable WARNING band.
+- **Risk has *kinds*, not just *amounts*** (§6.3 archetypes) — the same `risk_score` can mean very different operational realities (delivery, satisfaction, structural). The intervention plan in §7 is differentiated by archetype.
+- **The top-20 list is actionable today** (§6.5) — concrete sellers, with a directional read on what's wrong (delivery / sentiment / centrality), ready for account-management triage.
+
+The cross-analysis synthesis is what makes the three sub-analyses *together* worth more than any one of them alone.""")
+
+
+# ===========================================================================
+# Section 7 lands in commit 6.
 # ===========================================================================
 md("""---
 
-> **Sections §6 (Cross-Analysis Synthesis) and §7 (Conclusions) are added in subsequent commits.**
+> **Section §7 (Conclusions, recommendations, big-data-safety log, reproducibility) lands in the next commit.**
 
-This commit (commit 4 of 6) lands the Network sub-analysis. The next commit fuses the three sub-analyses into the Seller Risk Index and renders the cross-analysis synthesis.""")
+This commit (commit 5 of 6) lands the Cross-Analysis Synthesis. The final commit closes with concrete recommendations for Olist, the safety log, and the rubric-compliance check.""")
 
 code('''spark.stop()
 print("Spark stopped.")

@@ -391,6 +391,83 @@ def confusion_matrix_heatmap(
     return fig
 
 
+def correlation_heatmap(
+    df: pd.DataFrame,
+    cols: Sequence[str],
+    *,
+    title: str = "Pearson correlation",
+    cmap: str = "RdBu_r",
+) -> Figure:
+    """Compute and render an NxN Pearson correlation matrix as a heatmap.
+
+    Diverging colour map centred on 0 so positive (+1) and negative (-1)
+    correlations are visually distinct.
+    """
+    corr = df[list(cols)].corr(method="pearson")
+    fig, ax = plt.subplots(figsize=(max(4, 0.9 * len(cols) + 2), max(3.2, 0.7 * len(cols) + 1.5)))
+    sns.heatmap(
+        corr,
+        annot=True,
+        fmt=".2f",
+        cmap=cmap,
+        center=0,
+        vmin=-1,
+        vmax=1,
+        linewidths=0.5,
+        linecolor="white",
+        cbar_kws={"label": "Pearson ρ"},
+        ax=ax,
+    )
+    ax.set_title(title)
+    fig.tight_layout()
+    return fig
+
+
+def archetype_scatter(
+    df: pd.DataFrame,
+    *,
+    components: Sequence[str],
+    cluster_col: str = "cluster",
+    label_col: str = "archetype",
+    title: str = "Risk archetypes — pairwise component view",
+) -> Figure:
+    """Three-panel pairwise scatter (one per component pair) coloured by
+    cluster + archetype label. Renders well even at ~3000 sellers because
+    each cluster is plotted with low alpha.
+    """
+    pairs = [
+        (components[0], components[1]),
+        (components[0], components[2]),
+        (components[1], components[2]),
+    ]
+    cluster_to_label = (
+        df.drop_duplicates(cluster_col)[[cluster_col, label_col]]
+        .set_index(cluster_col)[label_col]
+        .to_dict()
+    )
+    clusters_sorted = sorted(cluster_to_label.keys())
+    palette = sns.color_palette("deep", n_colors=len(clusters_sorted))
+
+    fig, axes = plt.subplots(1, 3, figsize=(15, 4.6))
+    for ax, (x, y) in zip(axes, pairs):
+        for color, c in zip(palette, clusters_sorted):
+            sub = df[df[cluster_col] == c]
+            ax.scatter(
+                sub[x], sub[y],
+                color=color, alpha=0.55, s=18, edgecolors="none",
+                label=f"{cluster_to_label[c]} (n={len(sub):,})",
+            )
+        ax.set_xlabel(x.replace("_", " "))
+        ax.set_ylabel(y.replace("_", " "))
+        ax.grid(alpha=0.3)
+        ax.set_xlim(-0.02, 1.02)
+        ax.set_ylim(-0.02, 1.02)
+    axes[0].legend(loc="upper left", fontsize=8, framealpha=0.85)
+    fig.suptitle(title, fontsize=12, fontweight="bold")
+    fig.tight_layout(rect=[0, 0, 1, 0.96])
+    return fig
+
+
 def schema_diagram(title: str = "Olist schema — 9 tables, shared keys") -> Figure:
     """Render the 9-table Olist schema as boxes + FK arrows.
 

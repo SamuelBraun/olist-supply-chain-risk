@@ -180,6 +180,85 @@ def top50_for_quadrant(risk: DataFrame):
     return risk.orderBy(F.col("risk_score").desc()).limit(50).toPandas()
 
 
+RISK_ARCHETYPE_LABELS = {
+    "delay-driven":     "high demand_norm — operationally late, otherwise OK",
+    "sentiment-driven": "high sentiment_norm — customers unhappy, delivery may still be on time",
+    "centrality-driven":"high network_norm — structurally critical, low individual signal",
+    "low-risk":         "low on all three axes — the bulk of the marketplace",
+}
+
+
+def risk_archetypes(risk: DataFrame, k: int = 4, seed: int = 42):
+    """Cluster sellers in the (demand_norm, sentiment_norm, network_norm)
+    space via Spark ML K-Means, then label each cluster by which axis
+    dominates its centroid. Returns (clustered_pdf, summary_pdf):
+
+    * `clustered_pdf` — pandas, one row per seller, columns include
+      `cluster` (int) and `archetype` (label).
+    * `summary_pdf` — pandas, one row per cluster: n_sellers, mean of
+      each component, mean risk_score, archetype label.
+
+    Pure-Spark KMeans avoids a sklearn driver-side fit; the only escape
+    is the final `.toPandas()` on the small (~3000-row) clustered frame
+    used by the scatter chart and the summary table.
+    """
+    from pyspark.ml.clustering import KMeans
+    from pyspark.ml.feature import VectorAssembler
+
+    components = ["demand_norm", "sentiment_norm", "network_norm"]
+    assembler = VectorAssembler(inputCols=components, outputCol="features_archetype")
+    risk_with_features = assembler.transform(risk)
+
+    km = KMeans(
+        k=k,
+        seed=seed,
+        featuresCol="features_archetype",
+        predictionCol="cluster",
+    )
+    model = km.fit(risk_with_features)
+    clustered = model.transform(risk_with_features).drop("features_archetype")
+
+    centroids = model.clusterCenters()  # list of np.ndarray, one per cluster
+
+    def _label_for(centroid):
+        idx = int(centroid.argmax())
+        component = components[idx]
+        if max(centroid) < 0.30:
+            return "low-risk"
+        if component == "demand_norm":
+            return "delay-driven"
+        if component == "sentiment_norm":
+            return "sentiment-driven"
+        return "centrality-driven"
+
+    cluster_to_label = {i: _label_for(c) for i, c in enumerate(centroids)}
+    label_udf = F.udf(lambda c: cluster_to_label.get(int(c), "unknown"))
+    clustered = clustered.withColumn("archetype", label_udf("cluster"))
+
+    summary = (
+        clustered.groupBy("cluster", "archetype")
+        .agg(
+            F.count("*").alias("n_sellers"),
+            F.avg("demand_norm").alias("mean_demand_norm"),
+            F.avg("sentiment_norm").alias("mean_sentiment_norm"),
+            F.avg("network_norm").alias("mean_network_norm"),
+            F.avg("risk_score").alias("mean_risk_score"),
+        )
+        .orderBy(F.col("mean_risk_score").desc())
+    )
+
+    # BIG-DATA-SAFETY-ESCAPE: PANDAS_MATPLOTLIB_VIZ — ~3000-row scatter feed
+    clustered_pdf = clustered.select(
+        "seller_id", "seller_state", "demand_norm", "sentiment_norm",
+        "network_norm", "risk_score", "risk_class", "cluster", "archetype",
+    ).toPandas()
+
+    # BIG-DATA-SAFETY-ESCAPE: SMALL_SUMMARY_COLLECT — ≤k-row aggregate
+    summary_pdf = summary.toPandas()
+
+    return clustered_pdf, summary_pdf
+
+
 def state_mean_risk(risk: DataFrame):
     """Per-state mean risk_score across *all* sellers as a pandas DataFrame
     (≤27 rows after groupBy seller_state).

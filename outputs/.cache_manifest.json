@@ -1,12 +1,12 @@
 {
   "entries": {
     "convergence.seller_risk_index": {
-      "fingerprint": "171b99675ef665130b5535e5c34f80d24be2a863f80376572d9c44bbd64188e0",
+      "fingerprint": "51b5e32194ea5fba9ab8de1a7b7417b1278955874a223c72e7d6b982695ed861",
       "outputs": [
         "outputs/seller_risk_index.parquet"
       ],
       "version": 1,
-      "written_at": "2026-04-24T22:29:02"
+      "written_at": "2026-04-25T15:31:38"
     },
     "demand.fit_and_score": {
       "fingerprint": "76d063704c051e7be1cc6931a0d455e88b0d3b930395f67f563eb7ccf4917fca",
