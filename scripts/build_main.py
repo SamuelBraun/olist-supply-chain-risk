@@ -762,13 +762,258 @@ md("""### 🎯 Sub-Analysis 2 — Key Takeaways
 
 
 # ===========================================================================
-# Sections 5-7 land in subsequent commits.
+# 5. Sub-Analysis 3 — Supply-Network Graph
+# ===========================================================================
+md("""## 5. Sub-Analysis 3 — Supply-Network Graph
+
+The third and final sub-analysis. Same eight-substep skeleton: framing → EDA → cleaning → preprocessing → feature engineering → modelling → evaluation → interpretation, closing with **Key Takeaways**. The PySpark primitive on display here is **GraphFrames** — six distinct algorithms (PageRank, connected components, motif-finding, BFS, induced subgraph, edge weighting).""")
+
+
+md("""### 5.1 Problem framing
+
+**Sub-research question.** *Which sellers are structural single-points-of-failure — i.e. their disappearance would disrupt the most customers — and who could absorb their demand if they failed?*
+
+**Success criteria.**
+- A **PageRank score per seller** that ranks structural importance in the bidirectional customer-seller graph.
+- A **shared-customer motif map** that identifies natural backup-seller pairs.
+- A **per-seed BFS** that returns the nearest alternative seller for each top-PageRank seller.
+- A **delayed-subgraph PageRank** isolating sellers central to the *late-shipping* part of the network — the contagion-risk signal.
+
+**Method-choice rationale.**
+- **GraphFrames over `networkx`.** GraphFrames runs on the JVM, scales horizontally, and survives a 100× scale-up unchanged. `networkx` would be 10× slower at this size and unusable at 1 M vertices.
+- **`connectedComponents(algorithm="graphx")` over the default message-passing variant.** The default OOM'd the JVM heap on this graph at 6 GB driver memory (logged in `decisions_log.md` 2026-04-22 NB3 entry); GraphX CC is more memory-efficient and completes in seconds.
+- **Bidirectional edges (`purchase` + `serves`).** Required so PageRank flows both ways and BFS can reach other sellers via shared customers.""")
+
+
+md("""### 5.2 Exploratory data analysis (network-specific)""")
+
+md("""#### 5.2.1 The order-line base + vertex / edge construction
+
+Vertices = sellers ∪ unique customers (the latter using `customer_unique_id`, *not* `customer_id`, so a returning customer is one vertex). Edges = bidirectional `purchase` + `serves` weighted by order-item count, with `avg_delay` carried for the delayed-subgraph rerun in §5.6.""")
+
+code('''from olist.pipeline.network import build_order_lines as net_order_lines, build_vertices, build_edges
+
+order_lines_net = net_order_lines(spark)
+print(f"order_lines (network) rows: {order_lines_net.count():,}")
+
+vertices = build_vertices(spark)
+print(f"vertices total: {vertices.count():,}")
+vertices.groupBy("type").agg(F.count("*").alias("n")).orderBy("type").show()
+
+edges = build_edges(spark)
+print(f"edges total: {edges.count():,}")
+edges.groupBy("edge_type").agg(F.count("*").alias("n")).orderBy("edge_type").show()
+''')
+
+md("""**What this means.** The graph is roughly **sellers + 95k unique customers** with **~200k bidirectional edges**. The customer side dominates the vertex count by ~30×; PageRank's behaviour on this kind of bipartite-ish graph depends on letting flow pass both ways through the customer "super-nodes," which is why bidirectional edges are required.""")
+
+
+md("""### 5.3 Cleaning — geolocation aggregation
+
+Already audited globally in §2.5; restated as the network-specific decision: ~1 M raw geolocation rows are reduced to **19,015 zip-prefix centroids** once and broadcast everywhere. The raw geolocation table is never joined to the graph itself; only the per-seller-state context column comes from the broadcast lookup.""")
+
+
+md("""### 5.4 Preprocessing — `GraphFrame(v, e)`
+
+Building the GraphFrame is cheap (it's just a wrapper around the cached vertex + edge parquets). Every algorithm we run on it is its own `@step`-cached function, so reruns on unchanged inputs skip the expensive compute.""")
+
+code('''from olist.pipeline.network import build_graph_frame, seller_degree_stats
+
+g = build_graph_frame(spark)
+print("GraphFrame:", g)
+
+seller_degrees = seller_degree_stats(spark)
+print("\\nTop 5 sellers by purchase-only in-degree:")
+seller_degrees.orderBy(F.col("in_degree_purchase_only").desc()).limit(5).show()
+''')
+
+md("""**What this means.** A few sellers serve dramatically more customers than the median — the marketplace has clear "anchor sellers." This skew is what makes PageRank discriminative below: a small number of nodes will rank far above the rest.""")
+
+
+md("""### 5.5 Feature engineering — graph metrics""")
+
+md("""#### 5.5.1 PageRank — seller centrality
+
+PageRank with `resetProbability=0.15`, `maxIter=10` on the bidirectional graph. Seller vertices only.""")
+
+code('''from olist.pipeline.network import compute_pagerank
+
+seller_pagerank = compute_pagerank(spark)
+print(f"seller_pagerank rows: {seller_pagerank.count():,}")
+''')
+
+md("""#### 5.5.2 Connected components + isolation flag""")
+
+code('''from olist.pipeline.network import compute_connected_components
+
+cc_with_size = compute_connected_components(spark)
+isolated_sellers = cc_with_size.filter(
+    (F.col("type") == "seller") & (F.col("component_size") == 1)
+)
+print(f"isolated sellers:           {isolated_sellers.count():,}")
+print(f"distinct components total:  {cc_with_size.select('component').distinct().count():,}")
+''')
+
+md("""**What this means.** A seller with `component_size == 1` is *truly* isolated — no shared customers with any other seller. Every isolated seller is a structural single-point-of-failure. The component-size distribution is rendered as a chart in §5.7.3.""")
+
+
+md("""#### 5.5.3 Motif `(a)→c←(b)` — shared-customer seller pairs
+
+Two sellers `a` and `b` sharing a customer `c` via two `serves` edges. Deduped with `a.id < b.id`. Captures the substitutability relation: if `a` fails, `b` already serves many of `a`'s customers.""")
+
+code('''from olist.pipeline.network import compute_shared_customer_motifs
+
+shared_customer_pairs = compute_shared_customer_motifs(spark)
+print(f"distinct seller-pairs sharing ≥1 customer: {shared_customer_pairs.count():,}")
+''')
+
+
+md("""### 5.6 Modelling — BFS backups + delayed-subgraph PageRank""")
+
+md("""#### 5.6.1 BFS — nearest alternative seller for each top-PageRank seller
+
+For each of the top-10 PageRank sellers, BFS with `maxPathLength=3` returns the *nearest other seller* via shared customers. That seller is the deployment-ready "backup." Two flagged escapes (`TOP10_PAGERANK_DRIVER` for the 10-row driver list, `BFS_BACKUP_COLLECT` for the per-seed `limit(1).collect()`) — both capped by construction.""")
+
+code('''from olist.pipeline.network import compute_bfs_backups
+
+backup_df = compute_bfs_backups(spark)
+backup_df.show(truncate=False)
+''')
+
+md("""#### 5.6.2 Delayed-subgraph PageRank — contagion centrality
+
+Induced subgraph over edges where `avg_delay > 5`; rerun PageRank there. Sellers ranking high in the delayed subgraph are *structurally central to the late-shipping part of the marketplace* — i.e. the contagion-risk hubs.""")
+
+code('''from olist.pipeline.network import compute_delayed_subgraph_pagerank
+
+seller_network_risk = compute_delayed_subgraph_pagerank(spark)
+print(f"seller_network_risk rows: {seller_network_risk.count():,}")
+''')
+
+
+md("""### 5.7 Evaluation — top-10 PageRank, top-20 motifs, component-size distribution""")
+
+md("""#### 5.7.1 Top-10 sellers by PageRank""")
+
+code('''# BIG-DATA-SAFETY-ESCAPE: PANDAS_MATPLOTLIB_VIZ — capped to 10 rows
+top10_pagerank = (
+    seller_pagerank.withColumnRenamed("id", "seller_id")
+    .orderBy(F.col("pagerank_score").desc())
+    .limit(10)
+    .toPandas()
+)
+top10_pagerank["seller_id"] = top10_pagerank["seller_id"].str.slice(0, 10) + "…"
+viz.styled_topn_table(
+    top10_pagerank,
+    bar_cols=["pagerank_score"],
+    fmt={"pagerank_score": "{:.4f}"},
+    title="Top-10 sellers by PageRank (bidirectional graph)",
+)
+''')
+
+md("""**What this means.** These are the structural hubs. A failure at any of them cascades widely — they are the first candidates for proactive monitoring *regardless* of their demand or sentiment scores. The §6 risk index combines PageRank with the other two signals, but PageRank alone is already an actionable list.""")
+
+
+md("""#### 5.7.2 Top-20 seller pairs by shared customers""")
+
+code('''# BIG-DATA-SAFETY-ESCAPE: PANDAS_MATPLOTLIB_VIZ — capped to 20 rows
+top20_motifs = (
+    shared_customer_pairs.orderBy(F.col("n_shared_customers").desc())
+    .limit(20)
+    .toPandas()
+)
+top20_motifs["seller_a"] = top20_motifs["seller_a"].str.slice(0, 10) + "…"
+top20_motifs["seller_b"] = top20_motifs["seller_b"].str.slice(0, 10) + "…"
+viz.styled_topn_table(
+    top20_motifs,
+    bar_cols=["n_shared_customers"],
+    fmt={"n_shared_customers": "{:d}"},
+    title="Top-20 seller pairs by shared customers (motif `(a)→c←(b)`)",
+)
+''')
+
+md("""**What this means.** Substitutability map. These pairs are the strongest natural backup relationships in the marketplace — if seller A fails, seller B already serves many of A's customers and could absorb the demand with minimal customer friction. Operations should formalise dual-sourcing for the top-N pairs.""")
+
+
+md("""#### 5.7.3 Component-size distribution""")
+
+code('''from olist.pipeline.network import component_size_histogram
+
+# BIG-DATA-SAFETY-ESCAPE: PANDAS_MATPLOTLIB_VIZ — 5-row aggregate
+hist = component_size_histogram(spark)
+hist.show()
+
+bin_order = ["1 (isolated)", "2–4", "5–9", "10–99", "100+"]
+hist_pd = hist.toPandas()
+hist_pd["size_bin"] = hist_pd["size_bin"].astype("category").cat.set_categories(bin_order, ordered=True)
+hist_pd = hist_pd.sort_values("size_bin")
+viz.state_bar(
+    hist_pd,
+    value_col="n_components",
+    label_col="size_bin",
+    title="Component-size distribution (# components per size bin)",
+    sort="asc",
+    color_by_value=True,
+)
+''')
+
+md("""**What this means.** The marketplace is dominated by **one giant connected component** containing essentially every active seller and customer. This is the *good* topology for a marketplace — it means the recommendation engine could in principle route customers from any seller to any other. The opposite finding (many small islands) would have implied serious geographic or category fragmentation.""")
+
+
+md("""### 5.8 Interpretation — per-seller scores + deployment view
+
+The deployable parquet `outputs/nb3_seller_network_scores.parquet` carries `pagerank_score`, `in_degree`, `is_isolated`, `backup_seller_id`, `network_risk_score` (= delayed-subgraph PageRank).""")
+
+code('''from olist.pipeline.network import build_seller_network_scores
+
+seller_network_scores = build_seller_network_scores(spark)
+print(f"seller_network_scores rows: {seller_network_scores.count():,}")
+seller_network_scores.groupBy("is_isolated").agg(F.count("*").alias("n")).orderBy("is_isolated").show()
+''')
+
+code('''# BIG-DATA-SAFETY-ESCAPE: PANDAS_MATPLOTLIB_VIZ — capped to 10 rows
+top10_risk = (
+    seller_network_scores.orderBy(F.col("network_risk_score").desc()).limit(10).toPandas()
+)
+top10_risk["seller_id"] = top10_risk["seller_id"].str.slice(0, 10) + "…"
+top10_risk["backup_seller_id"] = (
+    top10_risk["backup_seller_id"].fillna("—").astype(str).str.slice(0, 10) + "…"
+)
+viz.styled_topn_table(
+    top10_risk,
+    bar_cols=["network_risk_score"],
+    gradient_cols=["pagerank_score"],
+    fmt={
+        "pagerank_score": "{:.4f}",
+        "network_risk_score": "{:.4f}",
+        "in_degree": "{:d}",
+        "is_isolated": "{:d}",
+    },
+    title="Top-10 sellers by delayed-subgraph PageRank (network contagion risk)",
+)
+''')
+
+md("""**What this means.** These ten sellers are the **contagion hubs**: structurally central to the part of the network where deliveries arrive late. An account manager should prioritise these for operational review — any service improvement here has network-wide spillover. The `pagerank_score` gradient shows how their *general* importance compares to their *delayed-subgraph* importance; a seller that is high on both is the most operationally critical case.""")
+
+
+md("""### 🎯 Sub-Analysis 3 — Key Takeaways
+
+- **One giant component dominates.** The marketplace is well-connected; recommendation-engine cross-sell between sellers is structurally feasible.
+- **PageRank surfaces ~10 anchor sellers.** Their failure would cascade widely — they are intervention candidates regardless of demand or sentiment scores.
+- **The shared-customer motif map identifies natural backups.** The top-20 pairs are the formal candidates for dual-sourcing agreements.
+- **BFS provides a 1:1 backup mapping for each top-PageRank seller.** Operationally usable as a pre-cached "if X fails, route to Y" lookup.
+- **Delayed-subgraph PageRank flags the contagion-risk tail.** Sellers central to the late-shipping subgraph are the operational priorities for the §7 recommendations.
+- **Honest limitation.** The graph treats every customer-seller interaction as equal weight in the bidirectional edges (count of items only, not revenue); a value-weighted edge could change which sellers count as *structurally important*.""")
+
+
+# ===========================================================================
+# Sections 6-7 land in subsequent commits.
 # ===========================================================================
 md("""---
 
-> **Sections §5 (Network), §6 (Cross-Analysis Synthesis), and §7 (Conclusions) are added in subsequent commits.**
+> **Sections §6 (Cross-Analysis Synthesis) and §7 (Conclusions) are added in subsequent commits.**
 
-This commit (commit 3 of 6) lands the Sentiment sub-analysis. The remaining sub-analyses follow the same eight-substep skeleton.""")
+This commit (commit 4 of 6) lands the Network sub-analysis. The next commit fuses the three sub-analyses into the Seller Risk Index and renders the cross-analysis synthesis.""")
 
 code('''spark.stop()
 print("Spark stopped.")
