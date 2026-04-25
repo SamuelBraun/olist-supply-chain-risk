@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Execute notebooks/00_main.ipynb end-to-end (narrative orchestrator).
+# Execute notebooks/main.ipynb end-to-end (the unified comprehensive deliverable).
 # On a warm cache this runs in under a minute; cold, 10-15 minutes.
 #
 # Usage: bash run.sh
@@ -21,9 +21,9 @@ else
     JUPYTER="jupyter"
 fi
 
-echo "Executing notebooks/00_main.ipynb (JAVA_HOME=$JAVA_HOME)..."
+echo "Executing notebooks/main.ipynb (JAVA_HOME=$JAVA_HOME)..."
 "$JUPYTER" nbconvert --to notebook --execute --inplace \
-    --ExecutePreprocessor.timeout=3600 notebooks/00_main.ipynb
+    --ExecutePreprocessor.timeout=3600 notebooks/main.ipynb
 
 echo
-echo "00_main.ipynb executed end-to-end."
+echo "main.ipynb executed end-to-end."

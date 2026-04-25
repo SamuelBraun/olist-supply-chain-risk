@@ -1,8 +1,7 @@
 #!/usr/bin/env bash
-# Re-execute all four notebooks in place (00_main first, then the three
-# thematic deep-dives), assert every code cell has non-empty outputs,
-# then zip notebooks + the presentation PDF into a single Moodle-ready
-# submission file.
+# Re-execute notebooks/main.ipynb in place, assert every code cell has
+# non-empty outputs, then zip the notebook + presentation PDF into a
+# single Moodle-ready submission file.
 #
 # Usage: bash submission/build_zip.sh [GROUP_NUMBER]
 #   GROUP_NUMBER defaults to "X" — pass your Moodle group number.
@@ -28,39 +27,28 @@ else
     JUPYTER="jupyter"
 fi
 
-NOTEBOOKS=(
-    "notebooks/00_main.ipynb"
-    "notebooks/01_demand_forecasting.ipynb"
-    "notebooks/02_sentiment_analysis.ipynb"
-    "notebooks/03_supply_network_graph.ipynb"
-)
+NOTEBOOK="notebooks/main.ipynb"
 PRESENTATION="presentation/presentation.pdf"
 ZIP_PATH="submission/olist_bigdata_group${GROUP_NUMBER}.zip"
 
 # 1. Sanity check inputs
-for nb in "${NOTEBOOKS[@]}"; do
-    [[ -f "$nb" ]] || { echo "MISSING: $nb"; exit 1; }
-done
+[[ -f "$NOTEBOOK" ]] || { echo "MISSING: $NOTEBOOK"; exit 1; }
 [[ -f "$PRESENTATION" ]] || { echo "MISSING: $PRESENTATION (export the pptx as PDF first)"; exit 1; }
 
-# 2. Re-execute each notebook in place so all cell outputs are fresh
-for nb in "${NOTEBOOKS[@]}"; do
-    echo "Executing $nb ..."
-    "$JUPYTER" nbconvert --to notebook --execute --inplace \
-        --ExecutePreprocessor.timeout=3600 "$nb"
-done
+# 2. Re-execute the notebook in place so all cell outputs are fresh
+echo "Executing $NOTEBOOK ..."
+"$JUPYTER" nbconvert --to notebook --execute --inplace \
+    --ExecutePreprocessor.timeout=3600 "$NOTEBOOK"
 
 # GraphFrames leaves a checkpoint dir inside outputs/ — not part of the deliverable.
 rm -rf "$ROOT_DIR/outputs/_gf_checkpoints"
 
-# 3. Assert every code cell has non-empty, non-error outputs. The brief
-#    rejects notebooks without outputs outright.
-"$ROOT_DIR/.venv/bin/python" "$ROOT_DIR/scripts/assert_notebook_outputs.py" \
-    "${NOTEBOOKS[@]}"
+# 3. Assert every code cell has non-empty, non-error outputs.
+"$ROOT_DIR/.venv/bin/python" "$ROOT_DIR/scripts/assert_notebook_outputs.py" "$NOTEBOOK"
 
 # 4. Build the zip — only the graded artefacts
 rm -f "$ZIP_PATH"
-zip -j "$ZIP_PATH" "${NOTEBOOKS[@]}" "$PRESENTATION"
+zip -j "$ZIP_PATH" "$NOTEBOOK" "$PRESENTATION"
 
 echo
 echo "Built: $ZIP_PATH"

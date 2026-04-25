@@ -1179,16 +1179,127 @@ The cross-analysis synthesis is what makes the three sub-analyses *together* wor
 
 
 # ===========================================================================
-# Section 7 lands in commit 6.
+# 7. Conclusions & Limitations
 # ===========================================================================
+md("""## 7. Conclusions & Limitations
+
+This closing section converts the analytical findings into concrete recommendations, makes the project's limitations explicit, renders the big-data-safety log inline, and finishes with the programmatic rubric-compliance checks.""")
+
+
+md("""### 7.1 Recommendations for Olist
+
+Six prioritised actions grounded in the numbers above — management-ready, no jargon:
+
+1. **Intervene on the WARNING band first, by archetype.** No seller crosses into CRITICAL in this run; the WARNING band carries the entire actionable tail. The §6.3 archetype clusters tell you *what kind* of intervention each seller needs:
+   - *delay-driven* sellers → logistics / fleet / warehouse review (operational fix);
+   - *sentiment-driven* sellers → product-quality and post-sales review (commercial fix);
+   - *centrality-driven* sellers → dual-sourcing agreements + strategic-watchlist promotion (structural fix);
+   - *low-risk* sellers → routine monitoring only.
+
+2. **Use the §6.5 top-20 list this week.** It's the deployable hand-off to account management; the bar + gradient on each row tells the AM *which signal* to lead the conversation with.
+
+3. **Geographic targeting for delivery-risk interventions.** The §3.2.1 late-rate state bar and the §6.4 state-mean-risk bar both surface the same handful of Brazilian states with above-mean late rates. Run a focused regional seller-health sweep there before the next quarterly review.
+
+4. **Formalise dual-sourcing for the top-10 PageRank sellers.** §5.7.2 (top-20 motifs) gives you the natural backup pairs; §5.6.1 (BFS backups) gives you a 1:1 backup mapping for each anchor seller. Both are pre-computed and ready for an operations-team handoff.
+
+5. **Don't stake intervention triggers on sentiment alone.** The §4.7.3 lead-indicator finding is honest: |ρ| ≈ 0.015 — sentiment is a *confirming* signal alongside delay + network risk in the composite, not a *predictive* signal in isolation.
+
+6. **Invest in a streaming upgrade if marketplace volume grows 10×.** The entire pipeline is big-data-safe by construction (§7.3 below); moving `nb1_weekly_order_volume` to Structured Streaming converts this notebook into a continuous early-warning system without changing any of the analytical logic.""")
+
+
+md("""### 7.2 What the model can't see — honest limitations
+
+Five honest gaps, in priority order:
+
+- **Promotion calendars.** The forecast has no view of marketplace-wide promotions or seller-level campaigns; large positive residuals in §3.7.3 correspond to volume spikes the feature set genuinely cannot predict. Adding a promotion-flag feature (if Olist surfaces one) would close most of this gap.
+- **Sentiment as a leading indicator is weak at this sample size.** §4.7.3 reports peak |ρ| ≈ 0.015 — *sentiment does not predict volume changes meaningfully* in the Olist sample. We use it as a component of the composite risk index, not as a standalone trigger.
+- **Reviews without comments are partly invisible.** ~58% of reviews have no text and are excluded from the NLP pipeline; they still contribute to the per-seller trend rollup via their numeric score, but the LSTM and LogReg classifiers train only on the comment-bearing subset.
+- **Equal-weight bidirectional edges in the network.** §5 treats every customer-seller interaction as equal weight (item count); a value-weighted edge (revenue, profitability, frequency) could change which sellers count as *structurally important*. Worth re-running with a value-weighted edge if Olist signs off.
+- **Threshold sensitivity.** The CRITICAL/WARNING/SAFE bands (`> 0.75`, `< 0.40`) are fixed in advance, not data-fitted. The current marketplace happens to have zero CRITICAL sellers; a more concentrated risk distribution would push some sellers across the line and change the operational triage. Worth re-banding *if* Olist's marketplace composition changes materially.""")
+
+
+md("""### 7.3 Big-data safety log — inline summary
+
+The course brief requires explicit per-call-site disclosure of every non-big-data-safe operation. The full table lives in `docs/big_data_safety_log.md`; the summary below renders the catalogue inline so the grader can audit it without leaving the notebook.""")
+
+code('''from olist import safety
+print("Catalogued escape-hatch IDs (src/olist/safety.py):")
+for constant in safety.ALL_ESCAPES:
+    print(" ", constant)
+''')
+
+code('''import re
+safety_log = (
+    Path.cwd().parent / "docs" / "big_data_safety_log.md"
+    if Path.cwd().name == "notebooks"
+    else Path.cwd() / "docs" / "big_data_safety_log.md"
+)
+rows = []
+for line in safety_log.read_text().splitlines():
+    m = re.match(r"\\| `([A-Z_0-9]+)` \\| ([^|]+) \\|", line)
+    if m:
+        rows.append(m.groups())
+print(f"{len(rows)} escape-hatch entries in docs/big_data_safety_log.md:\\n")
+for rid, site in rows:
+    print(f"  {rid:<24}  {site.strip()[:80]}")
+''')
+
+md("""**What this means.** Every `toPandas()` / `collect()` / non-Spark library call in the codebase is in this list, with its production-scale alternative and why each one is acceptable at this dataset size. The `checks.run_all()` aggregator below asserts that the registry, the markdown log, and the source-code annotations all stay consistent — if a contributor adds an unannotated escape, the check fails loudly.""")
+
+
+md("""### 7.4 Reproducibility — programmatic rubric checks
+
+Every brief-mandated rubric item maps to a check in `src/olist/checks.py::run_all()`. The aggregator returns a Spark DataFrame; we render it inline so the grader can verify rubric coverage at a glance.""")
+
+code('''from olist.checks import run_all as run_compliance_checks
+
+checks_df = run_compliance_checks(spark)
+checks_df.show(truncate=False, n=50)
+
+n_passed = checks_df.filter(F.col("passed")).count()
+n_total = checks_df.count()
+print(f"\\nRubric coverage: {n_passed}/{n_total} checks passed.")
+''')
+
+
+md("""### 7.5 Cache manifest — which steps ran vs. skipped this session""")
+
+code('''from olist.cache import manifest_summary
+
+summary = manifest_summary()
+print(f"{len(summary)} steps in outputs/.cache_manifest.json:")
+for entry in summary:
+    print(f"  {entry['step']:<38}  fp={entry['fingerprint']}  written={entry['written_at']}")
+''')
+
+
+md("""### 7.6 Environment
+
+The pinned interpreter + library versions for this run.""")
+
+code('''import pyspark, sys
+print("python:  ", sys.version.split()[0])
+print("pyspark: ", pyspark.__version__)
+try:
+    import torch; print("torch:   ", torch.__version__)
+except Exception:
+    pass
+try:
+    import graphframes  # noqa
+    print("graphframes coordinate is set in spark_session.py")
+except Exception:
+    pass
+''')
+
+
 md("""---
 
-> **Section §7 (Conclusions, recommendations, big-data-safety log, reproducibility) lands in the next commit.**
+## End of notebook
 
-This commit (commit 5 of 6) lands the Cross-Analysis Synthesis. The final commit closes with concrete recommendations for Olist, the safety log, and the rubric-compliance check.""")
+This is the complete deliverable. The project goals (§1.1), the three sub-research-questions (§1.2), the data-foundation context (§2), the three sub-analyses (§3, §4, §5), the cross-analysis synthesis (§6), and the recommendations + limitations + reproducibility (§7) all live here. The codebase under `src/olist/` is the single source of truth for every transformation; this notebook is the report surface.""")
 
 code('''spark.stop()
-print("Spark stopped.")
+print("Spark stopped. Main notebook complete.")
 ''')
 
 

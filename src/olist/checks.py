@@ -113,7 +113,7 @@ def check_cv_models() -> CheckResult:
 
 
 def check_lstm_justification() -> CheckResult:
-    _, md = _nb_cells("02_sentiment_analysis.ipynb")
+    _, md = _nb_cells("main.ipynb")
     blob = "\n".join(md).lower()
     ok = (
         "pytorch" in blob
@@ -121,11 +121,11 @@ def check_lstm_justification() -> CheckResult:
         and ("not spark" in blob or "mllib has no native" in blob or "no native lstm" in blob)
     )
     return CheckResult(
-        "LSTM justification cell present (NB2)",
+        "LSTM justification cell present (main §4)",
         ok,
         "PyTorch + justification + Spark-alternative language found"
         if ok
-        else "Missing justification markdown in NB2",
+        else "Missing justification markdown in main.ipynb §4",
     )
 
 
@@ -177,35 +177,26 @@ def check_markdown_ratio() -> CheckResult:
     cells inside one section as long as the run starts after a markdown
     cell — otherwise the contract ("describe what it does") is broken.
     """
-    per_nb = []
-    orphan_total = 0
-    for name in (
-        "00_main.ipynb",
-        "01_demand_forecasting.ipynb",
-        "02_sentiment_analysis.ipynb",
-        "03_supply_network_graph.ipynb",
-    ):
-        path = project_root() / "notebooks" / name
-        with path.open() as f:
-            cells = json.load(f)["cells"]
-        orphan_blocks = 0
-        in_block = False
-        for i, c in enumerate(cells):
-            if c["cell_type"] == "code":
-                if not in_block:
-                    in_block = True
-                    preamble_is_md = i > 0 and cells[i - 1]["cell_type"] == "markdown"
-                    if not preamble_is_md:
-                        orphan_blocks += 1
-            else:
-                in_block = False
-        per_nb.append(f"{name.split('_')[0]}={'OK' if orphan_blocks == 0 else f'{orphan_blocks} orphan'}")
-        orphan_total += orphan_blocks
-    ok = orphan_total == 0
+    name = "main.ipynb"
+    path = project_root() / "notebooks" / name
+    with path.open() as f:
+        cells = json.load(f)["cells"]
+    orphan_blocks = 0
+    in_block = False
+    for i, c in enumerate(cells):
+        if c["cell_type"] == "code":
+            if not in_block:
+                in_block = True
+                preamble_is_md = i > 0 and cells[i - 1]["cell_type"] == "markdown"
+                if not preamble_is_md:
+                    orphan_blocks += 1
+        else:
+            in_block = False
+    ok = orphan_blocks == 0
     return CheckResult(
         "Every code-block has a markdown preamble",
         ok,
-        ", ".join(per_nb),
+        f"{name}={'OK' if ok else f'{orphan_blocks} orphan'}",
     )
 
 
@@ -220,12 +211,7 @@ def check_safety_log_consistency() -> CheckResult:
     pipeline_src = _src(demand) + _src(sentiment) + _src(network) + _src(convergence)
     notebook_src = "\n".join(
         (root / "notebooks" / nb).read_text()
-        for nb in (
-            "00_main.ipynb",
-            "01_demand_forecasting.ipynb",
-            "02_sentiment_analysis.ipynb",
-            "03_supply_network_graph.ipynb",
-        )
+        for nb in ("main.ipynb",)
         if (root / "notebooks" / nb).exists()
     )
     annotations = pipeline_src + "\n" + notebook_src
