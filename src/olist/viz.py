@@ -64,8 +64,8 @@ def styled_topn_table(
         styler = styler.background_gradient(subset=list(gradient_cols), cmap=_RISK_CMAP)
     styler = styler.set_table_styles(
         [
-            {"selector": "caption", "props": "font-size: 1.1em; font-weight: 600; text-align: left; padding-bottom: 0.4em;"},
-            {"selector": "th", "props": "background-color: #f0f0f0; text-align: left;"},
+            {"selector": "caption", "props": "font-size: 1.1em; font-weight: 600; text-align: left; padding-bottom: 0.4em; color: #1a1a1a;"},
+            {"selector": "th", "props": "background-color: #e6e6e6; color: #1a1a1a; text-align: left; padding: 6px 10px; border-bottom: 1px solid #bdbdbd;"},
             {"selector": "td", "props": "padding: 4px 8px;"},
         ]
     )
@@ -97,8 +97,8 @@ def eda_quantile_table(stats: dict) -> "pd.io.formats.style.Styler":
     styler = styler.background_gradient(subset=["p25", "p50", "p75", "p95"], cmap="Blues", axis=1)
     styler = styler.set_table_styles(
         [
-            {"selector": "caption", "props": "font-size: 1em; text-align: left; padding-bottom: 0.4em;"},
-            {"selector": "th", "props": "background-color: #f0f0f0;"},
+            {"selector": "caption", "props": "font-size: 1em; text-align: left; padding-bottom: 0.4em; color: #1a1a1a;"},
+            {"selector": "th", "props": "background-color: #e6e6e6; color: #1a1a1a; padding: 6px 10px; border-bottom: 1px solid #bdbdbd;"},
         ]
     )
     return styler
@@ -109,7 +109,7 @@ def eda_quantile_table(stats: dict) -> "pd.io.formats.style.Styler":
 # ---------------------------------------------------------------------------
 
 
-def class_balance_bar(df: pd.DataFrame, label_col: str = "label", n_col: str = "n") -> Figure:
+def class_balance_bar(df: pd.DataFrame, label_col: str = "label", n_col: str = "n") -> None:
     """Stacked horizontal bar of class counts with percentage labels.
 
     Intended for the binary-sentiment class balance (positive / negative).
@@ -139,7 +139,6 @@ def class_balance_bar(df: pd.DataFrame, label_col: str = "label", n_col: str = "
     for spine in ("top", "right", "left"):
         ax.spines[spine].set_visible(False)
     fig.tight_layout()
-    return fig
 
 
 def state_bar(
@@ -150,7 +149,7 @@ def state_bar(
     title: str | None = None,
     color_by_value: bool = True,
     sort: str = "desc",
-) -> Figure:
+) -> None:
     """Horizontal bar chart of a per-state metric (≤27 rows)."""
     data = df.copy()
     ascending = sort == "asc"
@@ -170,10 +169,9 @@ def state_bar(
     ax.set_title(title or f"{value_col.replace('_', ' ').title()} by {label_col.replace('_', ' ')}")
     ax.grid(axis="x", alpha=0.3)
     fig.tight_layout()
-    return fig
 
 
-def feature_importance_bar(pairs: Iterable[tuple[str, float]], title: str = "Feature importance") -> Figure:
+def feature_importance_bar(pairs: Iterable[tuple[str, float]], title: str = "Feature importance") -> None:
     """Horizontal bar of (feature, importance) pairs, largest on top."""
     data = sorted(list(pairs), key=lambda p: p[1], reverse=True)
     names = [p[0] for p in data]
@@ -186,10 +184,9 @@ def feature_importance_bar(pairs: Iterable[tuple[str, float]], title: str = "Fea
     ax.set_title(title)
     ax.grid(axis="x", alpha=0.3)
     fig.tight_layout()
-    return fig
 
 
-def lag_corr_bar(df: pd.DataFrame, *, lag_col: str = "lag", corr_col: str = "corr") -> Figure:
+def lag_corr_bar(df: pd.DataFrame, *, lag_col: str = "lag", corr_col: str = "corr") -> None:
     """9-row lag-vs-correlation chart with peak annotation.
 
     ``df`` comes from ``pipeline.sentiment.build_lead_indicator_lags``.
@@ -217,7 +214,6 @@ def lag_corr_bar(df: pd.DataFrame, *, lag_col: str = "lag", corr_col: str = "cor
     ax.set_xticks(data[lag_col])
     ax.grid(axis="y", alpha=0.3)
     fig.tight_layout()
-    return fig
 
 
 # ---------------------------------------------------------------------------
@@ -234,7 +230,7 @@ def heatmap_from_long(
     cmap: str = _RISK_CMAP,
     fmt: str = ".2f",
     title: str | None = None,
-) -> Figure:
+) -> None:
     """Pivot a long DataFrame and render it as a seaborn heatmap."""
     wide = df.pivot_table(index=index, columns=columns, values=values, aggfunc="mean")
     fig, ax = plt.subplots(figsize=(max(5, 0.6 * len(wide.columns) + 2), max(3, 0.35 * len(wide) + 1)))
@@ -250,10 +246,9 @@ def heatmap_from_long(
     )
     ax.set_title(title or f"{values} by {index} × {columns}")
     fig.tight_layout()
-    return fig
 
 
-def risk_band_donut(df: pd.DataFrame, *, label_col: str = "risk_class", n_col: str = "n") -> Figure:
+def risk_band_donut(df: pd.DataFrame, *, label_col: str = "risk_class", n_col: str = "n") -> None:
     """Donut chart of risk-band counts with percentage labels."""
     colors = {"SAFE": "#55A868", "WARNING": "#DD8452", "CRITICAL": "#C44E52"}
     pie_colors = [colors.get(c, "#888") for c in df[label_col]]
@@ -275,7 +270,6 @@ def risk_band_donut(df: pd.DataFrame, *, label_col: str = "risk_class", n_col: s
     ax.text(0, 0, f"Total\n{total:,}\nsellers", ha="center", va="center", fontsize=11, fontweight="bold")
     ax.set_title("Seller risk-band distribution")
     fig.tight_layout()
-    return fig
 
 
 def quadrant_scatter(
@@ -288,7 +282,7 @@ def quadrant_scatter(
     title: str,
     xlabel: str | None = None,
     ylabel: str | None = None,
-) -> Figure:
+) -> None:
     """Bubble scatter for top-N seller risk views.
 
     Bubble area scales with ``size`` column, colour with ``color`` column.
@@ -316,7 +310,6 @@ def quadrant_scatter(
     cbar.set_label(color.replace("_", " "))
     ax.grid(alpha=0.25)
     fig.tight_layout()
-    return fig
 
 
 # ---------------------------------------------------------------------------
@@ -331,7 +324,7 @@ def weekly_trend_multiline(
     y: str,
     hue: str,
     title: str = "Weekly trend",
-) -> Figure:
+) -> None:
     """Multi-line chart of a weekly metric across a small set of entities.
 
     ``df`` is a capped long DataFrame (one row per (hue, x)). ``hue`` is
@@ -347,7 +340,6 @@ def weekly_trend_multiline(
     ax.legend(title=hue.replace("_", " "), loc="best", fontsize=8)
     ax.grid(alpha=0.3)
     fig.tight_layout()
-    return fig
 
 
 def confusion_matrix_heatmap(
@@ -358,7 +350,7 @@ def confusion_matrix_heatmap(
     n_col: str = "n",
     class_labels: Sequence[str] = ("negative (0)", "positive (1)"),
     title: str = "Confusion matrix — test set",
-) -> Figure:
+) -> None:
     """Render a 2×2 confusion matrix from a 4-row groupBy count."""
     pivot = counts.pivot_table(index=y_true, columns=y_pred, values=n_col, aggfunc="sum").fillna(0.0)
     pivot = pivot.reindex(index=[0, 1], columns=[0, 1], fill_value=0.0)
@@ -388,7 +380,6 @@ def confusion_matrix_heatmap(
     ax.set_ylabel("actual")
     ax.set_title(f"{title}  (n={int(total):,})")
     fig.tight_layout()
-    return fig
 
 
 def correlation_heatmap(
@@ -397,7 +388,7 @@ def correlation_heatmap(
     *,
     title: str = "Pearson correlation",
     cmap: str = "RdBu_r",
-) -> Figure:
+) -> None:
     """Compute and render an NxN Pearson correlation matrix as a heatmap.
 
     Diverging colour map centred on 0 so positive (+1) and negative (-1)
@@ -420,7 +411,6 @@ def correlation_heatmap(
     )
     ax.set_title(title)
     fig.tight_layout()
-    return fig
 
 
 def archetype_scatter(
@@ -430,7 +420,7 @@ def archetype_scatter(
     cluster_col: str = "cluster",
     label_col: str = "archetype",
     title: str = "Risk archetypes — pairwise component view",
-) -> Figure:
+) -> None:
     """Three-panel pairwise scatter (one per component pair) coloured by
     cluster + archetype label. Renders well even at ~3000 sellers because
     each cluster is plotted with low alpha.
@@ -465,10 +455,9 @@ def archetype_scatter(
     axes[0].legend(loc="upper left", fontsize=8, framealpha=0.85)
     fig.suptitle(title, fontsize=12, fontweight="bold")
     fig.tight_layout(rect=[0, 0, 1, 0.96])
-    return fig
 
 
-def schema_diagram(title: str = "Olist schema — 9 tables, shared keys") -> Figure:
+def schema_diagram(title: str = "Olist schema — 9 tables, shared keys") -> None:
     """Render the 9-table Olist schema as boxes + FK arrows.
 
     Hardcoded layout (the schema is fixed). Box colour encodes role
@@ -505,7 +494,37 @@ def schema_diagram(title: str = "Olist schema — 9 tables, shared keys") -> Fig
     ]
 
     fig, ax = plt.subplots(figsize=(11, 7.5))
-    box_w, box_h = 1.7, 0.7
+    box_w, box_h = 1.95, 0.85
+
+    def _wrap(name: str, limit: int = 12) -> str:
+        if len(name) <= limit:
+            return name
+        parts = name.split("_")
+        lines: list[str] = []
+        cur = parts[0]
+        for p in parts[1:]:
+            candidate = f"{cur}_{p}"
+            if len(candidate) <= limit:
+                cur = candidate
+            else:
+                lines.append(cur)
+                cur = p
+        lines.append(cur)
+        return "\n".join(lines)
+
+    def _edge_point(cx: float, cy: float, tx: float, ty: float) -> tuple[float, float]:
+        """Where the segment from (cx,cy) toward (tx,ty) exits the (box_w x box_h) box."""
+        dx, dy = tx - cx, ty - cy
+        if dx == 0 and dy == 0:
+            return cx, cy
+        half_w, half_h = box_w / 2, box_h / 2
+        if dx == 0:
+            return cx, cy + (half_h if dy > 0 else -half_h)
+        if dy == 0:
+            return cx + (half_w if dx > 0 else -half_w), cy
+        s = min(half_w / abs(dx), half_h / abs(dy))
+        return cx + dx * s, cy + dy * s
+
     for name, (x, y, role) in boxes.items():
         ax.add_patch(
             plt.Rectangle(
@@ -517,21 +536,26 @@ def schema_diagram(title: str = "Olist schema — 9 tables, shared keys") -> Fig
                 alpha=0.85,
             )
         )
-        ax.text(x, y, name, ha="center", va="center", fontsize=9.5, color="white", fontweight="bold")
+        wrapped = _wrap(name)
+        fontsize = 9.0 if "\n" in wrapped else 9.5
+        ax.text(x, y, wrapped, ha="center", va="center",
+                fontsize=fontsize, color="white", fontweight="bold",
+                linespacing=0.95)
 
     for src_name, dst_name, key in edges:
         x1, y1, _ = boxes[src_name]
         x2, y2, _ = boxes[dst_name]
+        sx, sy = _edge_point(x1, y1, x2, y2)
+        ex, ey = _edge_point(x2, y2, x1, y1)
         ax.annotate(
             "",
-            xy=(x2, y2),
-            xytext=(x1, y1),
-            arrowprops=dict(arrowstyle="->", color="grey", lw=0.9, alpha=0.7),
+            xy=(ex, ey),
+            xytext=(sx, sy),
+            arrowprops=dict(arrowstyle="->", color="grey", lw=0.9, alpha=0.8,
+                            shrinkA=0, shrinkB=0),
         )
-        midx = (x1 + x2) / 2
-        midy = (y1 + y2) / 2
-        ax.text(midx, midy, key, fontsize=7.5, color="black",
-                bbox=dict(boxstyle="round,pad=0.2", facecolor="white", edgecolor="none", alpha=0.85),
+        ax.text((sx + ex) / 2, (sy + ey) / 2, key, fontsize=7.5, color="black",
+                bbox=dict(boxstyle="round,pad=0.2", facecolor="white", edgecolor="none", alpha=0.9),
                 ha="center", va="center")
 
     handles = [
@@ -547,10 +571,9 @@ def schema_diagram(title: str = "Olist schema — 9 tables, shared keys") -> Fig
     ax.axis("off")
     ax.set_title(title, fontsize=12, fontweight="bold", pad=10)
     fig.tight_layout()
-    return fig
 
 
-def temporal_overlap_chart(df: pd.DataFrame, *, title: str = "Temporal coverage of timestamp columns") -> Figure:
+def temporal_overlap_chart(df: pd.DataFrame, *, title: str = "Temporal coverage of timestamp columns") -> None:
     """Gantt-style horizontal bars per (table, column) timestamp range.
 
     `df` is the pandas frame returned by `data_foundation.temporal_coverage(...).toPandas()`
@@ -578,10 +601,9 @@ def temporal_overlap_chart(df: pd.DataFrame, *, title: str = "Temporal coverage 
     ax.grid(axis="x", alpha=0.3)
     fig.autofmt_xdate()
     fig.tight_layout()
-    return fig
 
 
-def shared_key_grouped_bar(df: pd.DataFrame, *, title: str = "Shared-key cardinality across tables") -> Figure:
+def shared_key_grouped_bar(df: pd.DataFrame, *, title: str = "Shared-key cardinality across tables") -> None:
     """Grouped horizontal bar chart: for each shared key, distinct count per table.
 
     `df` from `data_foundation.shared_key_cardinality(...).toPandas()` —
@@ -608,7 +630,6 @@ def shared_key_grouped_bar(df: pd.DataFrame, *, title: str = "Shared-key cardina
     ax.grid(axis="x", alpha=0.3, which="both")
     ax.legend(loc="lower right", fontsize=8, ncol=2)
     fig.tight_layout()
-    return fig
 
 
 def residual_plot(
@@ -617,7 +638,7 @@ def residual_plot(
     y_true: str,
     y_pred: str,
     title: str = "Residuals — actual vs predicted",
-) -> Figure:
+) -> None:
     """Predicted vs actual scatter + residual histogram side-by-side."""
     data = df.copy()
     data["residual"] = data[y_true] - data[y_pred]
@@ -642,4 +663,3 @@ def residual_plot(
     ax1.set_title(f"Residual histogram  (μ={mean:.2f}, σ={std:.2f})")
     ax1.grid(alpha=0.3)
     fig.tight_layout()
-    return fig
