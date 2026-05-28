@@ -1,38 +1,107 @@
-"""Static visualisation helpers for the Olist notebooks.
+"""Visualisation helpers for the Olist notebook.
 
-Every helper here takes a *small* pandas DataFrame or dict (sourced from
-a pre-aggregated / pre-capped Spark aggregate) and returns a
-`matplotlib.figure.Figure` or a `pandas.io.formats.style.Styler`.
-Helpers never touch Spark, never do file I/O, and never materialise raw
-data — that contract is the module's reason for existing. Driver-side
-materialisation happens exactly once upstream, annotated with
-`# BIG-DATA-SAFETY-ESCAPE: PANDAS_MATPLOTLIB_VIZ` (or a more specific
-ID). See `docs/big_data_safety_log.md`.
+Every helper takes a *small* pandas DataFrame or dict (sourced from a
+pre-aggregated / pre-capped Spark aggregate) and either returns a
+`pandas.io.formats.style.Styler` (for tables) or displays a
+`plotly.graph_objects.Figure` (for charts). Helpers never touch Spark,
+never do file I/O, and never materialise raw data — that contract is
+the module's reason for existing.
+
+Plotly was chosen over matplotlib because the rendering payload it
+emits is a small JSON description of the figure, independent of the
+upstream Spark dataset size — i.e. the visualisation layer remains
+bounded even if the project scales to TB-class data, provided the
+upstream `.agg() / .limit()` contract is preserved. The interactive
+HTML is paired with a Kaleido-rendered static PNG (via the
+``notebook_connected+png`` renderer) so the executed notebook outputs
+survive fresh-kernel reopens required by
+``scripts/assert_notebook_outputs.py``.
+
+Driver-side materialisation happens exactly once upstream, annotated
+with ``# BIG-DATA-SAFETY-ESCAPE: PLOTLY_STATIC_VIZ`` (or a more specific
+ID). See ``docs/big_data_safety_log.md``.
 
 Palette:
-* Categorical: seaborn ``"deep"`` (colour-blind-safe, print-friendly).
-* Sequential risk / heat: matplotlib ``"Reds"``.
-* Diverging (residuals): matplotlib ``"RdBu_r"``.
-
-All helpers add a title, axis labels, grid, and call `tight_layout()`.
+* Categorical: ``plotly.express.colors.qualitative.D3`` (10-class, print-safe).
+* Sequential risk / heat: ``"Reds"``.
+* Diverging (residuals, correlations): ``"RdBu_r"``.
 """
 
 from __future__ import annotations
 
 from typing import Iterable, Sequence
 
-import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
-import seaborn as sns
-from matplotlib.figure import Figure
+import plotly.express as px
+import plotly.graph_objects as go
+import plotly.io as pio
+from plotly.subplots import make_subplots
 
-_CAT_PALETTE = sns.color_palette("deep")
-_RISK_CMAP = "Reds"
+# Interactive in Jupyter (notebook_connected) + a static PNG MIME fallback so
+# the notebook still shows a chart when reopened on a kernel that lacks the
+# plotly.js JS bundle. Both representations are emitted as cell outputs.
+pio.renderers.default = "notebook_connected+png"
+
+_CAT_PALETTE: list[str] = list(px.colors.qualitative.D3)
+_RISK_SCALE = "Reds"
+_DIVERGING_SCALE = "RdBu_r"
+
+# Sequential "Reds" colour stops, used by the styled-table gradients.
+_RED_STOPS = (
+    "#fff5f0",
+    "#fee0d2",
+    "#fcbba1",
+    "#fc9272",
+    "#fb6a4a",
+    "#ef3b2c",
+    "#cb181d",
+    "#a50f15",
+)
+_BLUE_STOPS = (
+    "#f7fbff",
+    "#deebf7",
+    "#c6dbef",
+    "#9ecae1",
+    "#6baed6",
+    "#4292c6",
+    "#2171b5",
+    "#08519c",
+)
+
+
+def _gradient_css(values: pd.Series, stops: Sequence[str]) -> list[str]:
+    """Map a numeric series to per-cell CSS background-colour strings.
+
+    Pandas Styler's ``.background_gradient`` depends on matplotlib for the
+    colormap; rolling our own keeps the Styler matplotlib-free.
+    """
+    if len(values) == 0:
+        return []
+    arr = pd.to_numeric(values, errors="coerce").astype(float)
+    lo, hi = float(np.nanmin(arr)), float(np.nanmax(arr))
+    if not np.isfinite(lo) or not np.isfinite(hi) or hi == lo:
+        return [f"background-color: {stops[len(stops) // 2]}"] * len(arr)
+    out: list[str] = []
+    n = len(stops) - 1
+    for v in arr:
+        if not np.isfinite(v):
+            out.append("background-color: #f0f0f0")
+            continue
+        t = (v - lo) / (hi - lo)
+        idx = min(int(round(t * n)), n)
+        out.append(f"background-color: {stops[idx]}")
+    return out
+
+
+def _show(fig: go.Figure) -> go.Figure:
+    # Jupyter renders the returned fig once via its mimebundle repr.
+    # Used to also call fig.show() here, which produced double output.
+    return fig
 
 
 # ---------------------------------------------------------------------------
-# Styled tables
+# Styled tables (pandas Styler — HTML only, no matplotlib)
 # ---------------------------------------------------------------------------
 
 
@@ -45,11 +114,11 @@ def styled_topn_table(
     title: str | None = None,
     hide_index: bool = True,
 ):
-    """Render ``df`` (≤50 rows) as a consulting-quality styled table.
+    """Render ``df`` (≤50 rows) as a consulting-quality styled HTML table.
 
-    ``bar_cols``        → embedded horizontal bars (for magnitudes).
-    ``gradient_cols``   → background colour gradient (for risk scores).
-    ``fmt``             → per-column format string (e.g. ``{"revenue": "R$ {:,.0f}"}``).
+    ``bar_cols``      → embedded horizontal bars (for magnitudes).
+    ``gradient_cols`` → red sequential gradient (for risk scores).
+    ``fmt``           → per-column format string.
     """
     styler = df.style
     if hide_index:
@@ -61,7 +130,10 @@ def styled_topn_table(
     if bar_cols:
         styler = styler.bar(subset=list(bar_cols), color="#4C72B0")
     if gradient_cols:
-        styler = styler.background_gradient(subset=list(gradient_cols), cmap=_RISK_CMAP)
+        for col in gradient_cols:
+            if col in df.columns:
+                css = _gradient_css(df[col], _RED_STOPS)
+                styler = styler.apply(lambda _s, css=css: css, subset=[col])
     styler = styler.set_table_styles(
         [
             {"selector": "caption", "props": "font-size: 1.1em; font-weight: 600; text-align: left; padding-bottom: 0.4em; color: #1a1a1a;"},
@@ -72,7 +144,7 @@ def styled_topn_table(
     return styler
 
 
-def eda_quantile_table(stats: dict) -> "pd.io.formats.style.Styler":
+def eda_quantile_table(stats: dict):
     """Render the ``eda_stats(...)`` dict as a styled summary table.
 
     Expected keys: ``price_quantiles``, ``delay_quantiles`` (each length-4
@@ -94,7 +166,13 @@ def eda_quantile_table(stats: dict) -> "pd.io.formats.style.Styler":
         f"products: {int(counts.get('approx_products', 0)):,}"
     )
     styler = styler.format({c: "{:,.2f}" for c in ["p25", "p50", "p75", "p95"]})
-    styler = styler.background_gradient(subset=["p25", "p50", "p75", "p95"], cmap="Blues", axis=1)
+    # Per-row blue gradient across the four quantile columns (axis=1 equivalent).
+    quant_cols = ["p25", "p50", "p75", "p95"]
+
+    def _row_gradient(row: pd.Series) -> list[str]:
+        return _gradient_css(row, _BLUE_STOPS)
+
+    styler = styler.apply(_row_gradient, axis=1, subset=quant_cols)
     styler = styler.set_table_styles(
         [
             {"selector": "caption", "props": "font-size: 1em; text-align: left; padding-bottom: 0.4em; color: #1a1a1a;"},
@@ -109,36 +187,38 @@ def eda_quantile_table(stats: dict) -> "pd.io.formats.style.Styler":
 # ---------------------------------------------------------------------------
 
 
-def class_balance_bar(df: pd.DataFrame, label_col: str = "label", n_col: str = "n") -> None:
+def class_balance_bar(df: pd.DataFrame, label_col: str = "label", n_col: str = "n") -> go.Figure:
     """Stacked horizontal bar of class counts with percentage labels.
 
     Intended for the binary-sentiment class balance (positive / negative).
     """
     total = float(df[n_col].sum())
-    fig, ax = plt.subplots(figsize=(6, 1.6))
-    colors = [_CAT_PALETTE[2], _CAT_PALETTE[3]]  # green / red-ish
-    left = 0.0
-    for (_, row), color in zip(df.iterrows(), colors):
-        pct = row[n_col] / total * 100
-        ax.barh(0, row[n_col], left=left, color=color, edgecolor="white", linewidth=1.2)
-        ax.text(
-            left + row[n_col] / 2,
-            0,
-            f"{row[label_col]}\n{int(row[n_col]):,} ({pct:.1f}%)",
-            ha="center",
-            va="center",
-            color="white",
-            fontsize=10,
-            fontweight="bold",
+    fig = go.Figure()
+    palette = ["#2ca02c", "#d62728"]  # green / red, colour-blind safe enough
+    for i, (_, row) in enumerate(df.iterrows()):
+        pct = row[n_col] / total * 100 if total else 0.0
+        fig.add_bar(
+            x=[row[n_col]],
+            y=["balance"],
+            orientation="h",
+            marker_color=palette[i % len(palette)],
+            text=[f"{row[label_col]} — {int(row[n_col]):,} ({pct:.1f}%)"],
+            textposition="inside",
+            insidetextanchor="middle",
+            hovertemplate="%{text}<extra></extra>",
+            name=str(row[label_col]),
         )
-        left += row[n_col]
-    ax.set_xlim(0, total)
-    ax.set_yticks([])
-    ax.set_xlabel("reviews")
-    ax.set_title("Review sentiment class balance")
-    for spine in ("top", "right", "left"):
-        ax.spines[spine].set_visible(False)
-    fig.tight_layout()
+    fig.update_layout(
+        barmode="stack",
+        title="Review sentiment class balance",
+        xaxis_title="reviews",
+        yaxis_title="",
+        showlegend=False,
+        height=160,
+        margin=dict(l=20, r=20, t=50, b=40),
+    )
+    fig.update_yaxes(showticklabels=False)
+    return _show(fig)
 
 
 def state_bar(
@@ -149,71 +229,106 @@ def state_bar(
     title: str | None = None,
     color_by_value: bool = True,
     sort: str = "desc",
-) -> None:
+) -> go.Figure:
     """Horizontal bar chart of a per-state metric (≤27 rows)."""
     data = df.copy()
     ascending = sort == "asc"
     data = data.sort_values(value_col, ascending=ascending).reset_index(drop=True)
-    fig, ax = plt.subplots(figsize=(7, max(3, 0.35 * len(data) + 1)))
+    color_kw = {}
     if color_by_value:
-        norm = plt.Normalize(vmin=data[value_col].min(), vmax=data[value_col].max())
-        cmap = plt.get_cmap(_RISK_CMAP)
-        colors = [cmap(norm(v)) for v in data[value_col]]
-    else:
-        colors = [_CAT_PALETTE[0]] * len(data)
-    ax.barh(data[label_col], data[value_col], color=colors, edgecolor="white")
-    for i, v in enumerate(data[value_col]):
-        ax.text(v, i, f"  {v:,.3f}" if v < 1 else f"  {v:,.1f}", va="center", fontsize=9)
-    ax.set_xlabel(value_col.replace("_", " "))
-    ax.set_ylabel(label_col.replace("_", " "))
-    ax.set_title(title or f"{value_col.replace('_', ' ').title()} by {label_col.replace('_', ' ')}")
-    ax.grid(axis="x", alpha=0.3)
-    fig.tight_layout()
+        color_kw = {"color": value_col, "color_continuous_scale": _RISK_SCALE}
+    fig = px.bar(
+        data,
+        x=value_col,
+        y=label_col,
+        orientation="h",
+        text=value_col,
+        **color_kw,
+    )
+    fig.update_traces(
+        texttemplate="%{x:,.3f}",
+        textposition="outside",
+        cliponaxis=False,
+    )
+    fig.update_layout(
+        title=title or f"{value_col.replace('_', ' ').title()} by {label_col.replace('_', ' ')}",
+        xaxis_title=value_col.replace("_", " "),
+        yaxis_title=label_col.replace("_", " "),
+        yaxis=dict(categoryorder="array", categoryarray=list(data[label_col])),
+        height=max(280, 28 * len(data) + 120),
+        margin=dict(l=80, r=60, t=60, b=50),
+    )
+    return _show(fig)
 
 
-def feature_importance_bar(pairs: Iterable[tuple[str, float]], title: str = "Feature importance") -> None:
+def feature_importance_bar(
+    pairs: Iterable[tuple[str, float]],
+    title: str = "Feature importance",
+) -> go.Figure:
     """Horizontal bar of (feature, importance) pairs, largest on top."""
     data = sorted(list(pairs), key=lambda p: p[1], reverse=True)
-    names = [p[0] for p in data]
-    values = [p[1] for p in data]
-    fig, ax = plt.subplots(figsize=(7, max(3, 0.4 * len(data) + 1)))
-    ax.barh(names[::-1], values[::-1], color=_CAT_PALETTE[0], edgecolor="white")
-    for i, v in enumerate(values[::-1]):
-        ax.text(v, i, f"  {v:.3f}", va="center", fontsize=9)
-    ax.set_xlabel("importance")
-    ax.set_title(title)
-    ax.grid(axis="x", alpha=0.3)
-    fig.tight_layout()
+    pdf = pd.DataFrame(data, columns=["feature", "importance"])
+    fig = px.bar(
+        pdf,
+        x="importance",
+        y="feature",
+        orientation="h",
+        text="importance",
+        color_discrete_sequence=[_CAT_PALETTE[0]],
+    )
+    fig.update_traces(texttemplate="%{x:.3f}", textposition="outside", cliponaxis=False)
+    fig.update_layout(
+        title=title,
+        xaxis_title="importance",
+        yaxis_title="",
+        yaxis=dict(categoryorder="array", categoryarray=list(pdf["feature"])[::-1]),
+        height=max(280, 32 * len(pdf) + 120),
+        margin=dict(l=140, r=60, t=60, b=50),
+    )
+    return _show(fig)
 
 
-def lag_corr_bar(df: pd.DataFrame, *, lag_col: str = "lag", corr_col: str = "corr") -> None:
+def lag_corr_bar(df: pd.DataFrame, *, lag_col: str = "lag", corr_col: str = "corr") -> go.Figure:
     """9-row lag-vs-correlation chart with peak annotation.
 
     ``df`` comes from ``pipeline.sentiment.build_lead_indicator_lags``.
     """
     data = df.sort_values(lag_col).copy()
-    fig, ax = plt.subplots(figsize=(7, 3.6))
-    colors = [_CAT_PALETTE[3] if v < 0 else _CAT_PALETTE[0] for v in data[corr_col]]
-    ax.bar(data[lag_col], data[corr_col], color=colors, edgecolor="white")
-    ax.axhline(0, color="grey", linewidth=0.8)
+    colors = ["#d62728" if v < 0 else _CAT_PALETTE[0] for v in data[corr_col]]
+    fig = go.Figure(
+        go.Bar(
+            x=data[lag_col],
+            y=data[corr_col],
+            marker_color=colors,
+            hovertemplate="lag=%{x}w<br>ρ=%{y:.4f}<extra></extra>",
+        )
+    )
+    fig.add_hline(y=0, line_width=1, line_color="grey")
 
     peak_idx = data[corr_col].abs().idxmax()
     peak_lag = int(data.loc[peak_idx, lag_col])
     peak_corr = float(data.loc[peak_idx, corr_col])
-    ax.annotate(
-        f"peak |ρ|={abs(peak_corr):.4f}\nat lag={peak_lag}w",
-        xy=(peak_lag, peak_corr),
-        xytext=(peak_lag, peak_corr + (0.005 if peak_corr >= 0 else -0.005)),
-        ha="center",
-        fontsize=9,
-        arrowprops=dict(arrowstyle="->", color="black", lw=0.8),
+    fig.add_annotation(
+        x=peak_lag,
+        y=peak_corr,
+        text=f"peak |ρ|={abs(peak_corr):.4f}<br>at lag={peak_lag}w",
+        showarrow=True,
+        arrowhead=2,
+        arrowsize=1,
+        ay=-30 if peak_corr >= 0 else 30,
+        bgcolor="white",
+        bordercolor="black",
+        borderpad=3,
     )
-    ax.set_xlabel("Lag k (weeks)")
-    ax.set_ylabel("Pearson ρ")
-    ax.set_title("Does sentiment decline precede volume decline?")
-    ax.set_xticks(data[lag_col])
-    ax.grid(axis="y", alpha=0.3)
-    fig.tight_layout()
+    fig.update_layout(
+        title="Does sentiment decline precede volume decline?",
+        xaxis_title="Lag k (weeks)",
+        yaxis_title="Pearson ρ",
+        xaxis=dict(tickmode="array", tickvals=list(data[lag_col])),
+        height=380,
+        margin=dict(l=60, r=40, t=60, b=50),
+    )
+    return _show(fig)
 
 
 # ---------------------------------------------------------------------------
@@ -227,49 +342,58 @@ def heatmap_from_long(
     index: str,
     columns: str,
     values: str,
-    cmap: str = _RISK_CMAP,
+    cmap: str = _RISK_SCALE,
     fmt: str = ".2f",
     title: str | None = None,
-) -> None:
-    """Pivot a long DataFrame and render it as a seaborn heatmap."""
+) -> go.Figure:
+    """Pivot a long DataFrame and render it as a Plotly heatmap."""
     wide = df.pivot_table(index=index, columns=columns, values=values, aggfunc="mean")
-    fig, ax = plt.subplots(figsize=(max(5, 0.6 * len(wide.columns) + 2), max(3, 0.35 * len(wide) + 1)))
-    sns.heatmap(
+    fig = px.imshow(
         wide,
-        annot=True,
-        fmt=fmt,
-        cmap=cmap,
-        linewidths=0.4,
-        linecolor="white",
-        ax=ax,
-        cbar_kws={"label": values},
+        text_auto=fmt,
+        color_continuous_scale=cmap,
+        aspect="auto",
+        labels=dict(x=columns, y=index, color=values),
     )
-    ax.set_title(title or f"{values} by {index} × {columns}")
-    fig.tight_layout()
+    fig.update_layout(
+        title=title or f"{values} by {index} × {columns}",
+        height=max(280, 30 * len(wide) + 120),
+        margin=dict(l=110, r=40, t=60, b=80),
+    )
+    return _show(fig)
 
 
-def risk_band_donut(df: pd.DataFrame, *, label_col: str = "risk_class", n_col: str = "n") -> None:
+def risk_band_donut(df: pd.DataFrame, *, label_col: str = "risk_class", n_col: str = "n") -> go.Figure:
     """Donut chart of risk-band counts with percentage labels."""
-    colors = {"SAFE": "#55A868", "WARNING": "#DD8452", "CRITICAL": "#C44E52"}
-    pie_colors = [colors.get(c, "#888") for c in df[label_col]]
+    color_map = {"SAFE": "#2ca02c", "WARNING": "#ff7f0e", "CRITICAL": "#d62728"}
+    pie_colors = [color_map.get(c, "#888") for c in df[label_col]]
     total = int(df[n_col].sum())
-
-    fig, ax = plt.subplots(figsize=(5.2, 4.5))
-    wedges, _ = ax.pie(
-        df[n_col],
-        colors=pie_colors,
-        startangle=90,
-        wedgeprops=dict(width=0.35, edgecolor="white", linewidth=2),
+    fig = go.Figure(
+        go.Pie(
+            labels=df[label_col],
+            values=df[n_col],
+            hole=0.5,
+            marker=dict(colors=pie_colors, line=dict(color="white", width=2)),
+            textinfo="label+value+percent",
+            textposition="outside",
+            sort=False,
+        )
     )
-    for w, cls, n in zip(wedges, df[label_col], df[n_col]):
-        ang = (w.theta2 + w.theta1) / 2
-        x = 0.82 * np.cos(np.deg2rad(ang))
-        y = 0.82 * np.sin(np.deg2rad(ang))
-        pct = n / total * 100 if total else 0
-        ax.text(x, y, f"{cls}\n{int(n):,}\n({pct:.1f}%)", ha="center", va="center", fontsize=9, fontweight="bold")
-    ax.text(0, 0, f"Total\n{total:,}\nsellers", ha="center", va="center", fontsize=11, fontweight="bold")
-    ax.set_title("Seller risk-band distribution")
-    fig.tight_layout()
+    fig.update_layout(
+        title="Seller risk-band distribution",
+        annotations=[
+            dict(
+                text=f"Total<br><b>{total:,}</b><br>sellers",
+                x=0.5, y=0.5,
+                font=dict(size=13),
+                showarrow=False,
+            )
+        ],
+        height=440,
+        margin=dict(l=20, r=20, t=60, b=20),
+        showlegend=False,
+    )
+    return _show(fig)
 
 
 def quadrant_scatter(
@@ -282,34 +406,33 @@ def quadrant_scatter(
     title: str,
     xlabel: str | None = None,
     ylabel: str | None = None,
-) -> None:
+) -> go.Figure:
     """Bubble scatter for top-N seller risk views.
 
     Bubble area scales with ``size`` column, colour with ``color`` column.
     Adds median-crosshairs to split the plot into four quadrants.
     """
-    fig, ax = plt.subplots(figsize=(7.2, 5.4))
     size_max = float(df[size].max()) or 1.0
-    sizes = 30 + 3500 * (df[size] / size_max)
-    sc = ax.scatter(
-        df[x],
-        df[y],
-        s=sizes,
-        c=df[color],
-        cmap=_RISK_CMAP,
-        alpha=0.78,
-        edgecolors="black",
-        linewidths=0.6,
+    fig = px.scatter(
+        df,
+        x=x,
+        y=y,
+        size=size,
+        color=color,
+        size_max=42,
+        color_continuous_scale=_RISK_SCALE,
+        hover_data=list(df.columns),
     )
-    ax.axhline(df[y].median(), color="grey", linewidth=0.6, linestyle="--", alpha=0.7)
-    ax.axvline(df[x].median(), color="grey", linewidth=0.6, linestyle="--", alpha=0.7)
-    ax.set_xlabel(xlabel or x.replace("_", " "))
-    ax.set_ylabel(ylabel or y.replace("_", " "))
-    ax.set_title(title)
-    cbar = plt.colorbar(sc, ax=ax)
-    cbar.set_label(color.replace("_", " "))
-    ax.grid(alpha=0.25)
-    fig.tight_layout()
+    fig.add_hline(y=float(df[y].median()), line_dash="dash", line_color="grey", line_width=1)
+    fig.add_vline(x=float(df[x].median()), line_dash="dash", line_color="grey", line_width=1)
+    fig.update_layout(
+        title=title,
+        xaxis_title=xlabel or x.replace("_", " "),
+        yaxis_title=ylabel or y.replace("_", " "),
+        height=520,
+        margin=dict(l=60, r=40, t=60, b=50),
+    )
+    return _show(fig)
 
 
 # ---------------------------------------------------------------------------
@@ -324,22 +447,26 @@ def weekly_trend_multiline(
     y: str,
     hue: str,
     title: str = "Weekly trend",
-) -> None:
-    """Multi-line chart of a weekly metric across a small set of entities.
-
-    ``df`` is a capped long DataFrame (one row per (hue, x)). ``hue`` is
-    typically ``seller_id``; the caller caps the unique hue count to ~5.
-    """
-    fig, ax = plt.subplots(figsize=(8, 4))
-    palette = sns.color_palette("deep", n_colors=df[hue].nunique())
-    for color, (name, sub) in zip(palette, df.sort_values(x).groupby(hue)):
-        ax.plot(sub[x], sub[y], label=str(name)[:12], color=color, linewidth=1.8, alpha=0.9)
-    ax.set_xlabel(x.replace("_", " "))
-    ax.set_ylabel(y.replace("_", " "))
-    ax.set_title(title)
-    ax.legend(title=hue.replace("_", " "), loc="best", fontsize=8)
-    ax.grid(alpha=0.3)
-    fig.tight_layout()
+) -> go.Figure:
+    """Multi-line chart of a weekly metric across a small set of entities."""
+    data = df.sort_values(x).copy()
+    fig = px.line(
+        data,
+        x=x,
+        y=y,
+        color=hue,
+        color_discrete_sequence=_CAT_PALETTE,
+    )
+    fig.update_traces(line=dict(width=1.8), opacity=0.9)
+    fig.update_layout(
+        title=title,
+        xaxis_title=x.replace("_", " "),
+        yaxis_title=y.replace("_", " "),
+        legend_title=hue.replace("_", " "),
+        height=400,
+        margin=dict(l=60, r=40, t=60, b=50),
+    )
+    return _show(fig)
 
 
 def confusion_matrix_heatmap(
@@ -350,36 +477,36 @@ def confusion_matrix_heatmap(
     n_col: str = "n",
     class_labels: Sequence[str] = ("negative (0)", "positive (1)"),
     title: str = "Confusion matrix — test set",
-) -> None:
+) -> go.Figure:
     """Render a 2×2 confusion matrix from a 4-row groupBy count."""
     pivot = counts.pivot_table(index=y_true, columns=y_pred, values=n_col, aggfunc="sum").fillna(0.0)
     pivot = pivot.reindex(index=[0, 1], columns=[0, 1], fill_value=0.0)
     total = pivot.values.sum()
     with np.errstate(invalid="ignore", divide="ignore"):
         row_norm = pivot.div(pivot.sum(axis=1), axis=0).fillna(0.0)
-    annot = np.empty_like(pivot.values, dtype=object)
-    for i in range(2):
-        for j in range(2):
-            n = int(pivot.values[i, j])
-            pct = row_norm.values[i, j] * 100
-            annot[i, j] = f"{n:,}\n({pct:.1f}%)"
-    fig, ax = plt.subplots(figsize=(5.2, 4.2))
-    sns.heatmap(
-        pivot,
-        annot=annot,
-        fmt="",
-        cmap="Blues",
-        linewidths=0.4,
-        linecolor="white",
-        xticklabels=class_labels,
-        yticklabels=class_labels,
-        cbar_kws={"label": "n reviews"},
-        ax=ax,
+    text = [
+        [
+            f"{int(pivot.values[i, j]):,}<br>({row_norm.values[i, j] * 100:.1f}%)"
+            for j in range(2)
+        ]
+        for i in range(2)
+    ]
+    fig = px.imshow(
+        pivot.values,
+        text_auto=False,
+        color_continuous_scale="Blues",
+        aspect="equal",
+        labels=dict(x="predicted", y="actual", color="n reviews"),
+        x=list(class_labels),
+        y=list(class_labels),
     )
-    ax.set_xlabel("predicted")
-    ax.set_ylabel("actual")
-    ax.set_title(f"{title}  (n={int(total):,})")
-    fig.tight_layout()
+    fig.update_traces(text=text, texttemplate="%{text}", hovertemplate="actual=%{y}<br>predicted=%{x}<br>%{text}<extra></extra>")
+    fig.update_layout(
+        title=f"{title}  (n={int(total):,})",
+        height=440,
+        margin=dict(l=80, r=40, t=60, b=60),
+    )
+    return _show(fig)
 
 
 def correlation_heatmap(
@@ -387,30 +514,85 @@ def correlation_heatmap(
     cols: Sequence[str],
     *,
     title: str = "Pearson correlation",
-    cmap: str = "RdBu_r",
-) -> None:
+    cmap: str = _DIVERGING_SCALE,
+) -> go.Figure:
     """Compute and render an NxN Pearson correlation matrix as a heatmap.
 
     Diverging colour map centred on 0 so positive (+1) and negative (-1)
     correlations are visually distinct.
     """
     corr = df[list(cols)].corr(method="pearson")
-    fig, ax = plt.subplots(figsize=(max(4, 0.9 * len(cols) + 2), max(3.2, 0.7 * len(cols) + 1.5)))
-    sns.heatmap(
+    fig = px.imshow(
         corr,
-        annot=True,
-        fmt=".2f",
-        cmap=cmap,
-        center=0,
-        vmin=-1,
-        vmax=1,
-        linewidths=0.5,
-        linecolor="white",
-        cbar_kws={"label": "Pearson ρ"},
-        ax=ax,
+        text_auto=".2f",
+        color_continuous_scale=cmap,
+        zmin=-1,
+        zmax=1,
+        aspect="equal",
+        labels=dict(color="Pearson ρ"),
     )
-    ax.set_title(title)
-    fig.tight_layout()
+    fig.update_layout(
+        title=title,
+        height=max(360, 70 * len(cols) + 120),
+        margin=dict(l=110, r=40, t=60, b=80),
+    )
+    return _show(fig)
+
+
+def kmeans_elbow_plot(
+    df: pd.DataFrame,
+    *,
+    k_col: str = "k",
+    wssse_col: str = "wssse",
+    chosen_k: int = 4,
+    title: str = "K-Means elbow — WSSSE vs k",
+) -> go.Figure:
+    """Line + marker chart of WSSSE per k with a vertical highlight at the
+    chosen elbow.
+
+    Used in notebook §6.3.1 to justify ``k=4`` for risk archetypes.
+    """
+    data = df.sort_values(k_col).copy()
+    fig = go.Figure()
+    fig.add_trace(
+        go.Scatter(
+            x=data[k_col],
+            y=data[wssse_col],
+            mode="lines+markers+text",
+            text=[f"{v:.1f}" for v in data[wssse_col]],
+            textposition="top center",
+            marker=dict(size=10, color=_CAT_PALETTE[0]),
+            line=dict(width=2, color=_CAT_PALETTE[0]),
+            hovertemplate="k=%{x}<br>WSSSE=%{y:.3f}<extra></extra>",
+            name="WSSSE",
+        )
+    )
+    if chosen_k in set(data[k_col].astype(int)):
+        chosen_y = float(data.loc[data[k_col] == chosen_k, wssse_col].iloc[0])
+        fig.add_vline(
+            x=chosen_k, line_dash="dash", line_color="#d62728", line_width=1.5,
+            annotation_text=f"chosen k={chosen_k}",
+            annotation_position="top right",
+        )
+        fig.add_trace(
+            go.Scatter(
+                x=[chosen_k], y=[chosen_y],
+                mode="markers",
+                marker=dict(size=16, color="#d62728", symbol="star"),
+                name=f"k={chosen_k}",
+                showlegend=False,
+            )
+        )
+    fig.update_layout(
+        title=title,
+        xaxis_title="k (number of clusters)",
+        yaxis_title="WSSSE (within-set sum of squared errors)",
+        xaxis=dict(tickmode="array", tickvals=list(data[k_col])),
+        height=380,
+        margin=dict(l=70, r=40, t=60, b=50),
+        showlegend=False,
+    )
+    return _show(fig)
 
 
 def archetype_scatter(
@@ -420,7 +602,7 @@ def archetype_scatter(
     cluster_col: str = "cluster",
     label_col: str = "archetype",
     title: str = "Risk archetypes — pairwise component view",
-) -> None:
+) -> go.Figure:
     """Three-panel pairwise scatter (one per component pair) coloured by
     cluster + archetype label. Renders well even at ~3000 sellers because
     each cluster is plotted with low alpha.
@@ -436,32 +618,51 @@ def archetype_scatter(
         .to_dict()
     )
     clusters_sorted = sorted(cluster_to_label.keys())
-    palette = sns.color_palette("deep", n_colors=len(clusters_sorted))
+    palette = {c: _CAT_PALETTE[i % len(_CAT_PALETTE)] for i, c in enumerate(clusters_sorted)}
 
-    fig, axes = plt.subplots(1, 3, figsize=(15, 4.6))
-    for ax, (x, y) in zip(axes, pairs):
-        for color, c in zip(palette, clusters_sorted):
+    fig = make_subplots(rows=1, cols=3, subplot_titles=[f"{x} vs {y}" for x, y in pairs])
+    for col_idx, (x, y) in enumerate(pairs, start=1):
+        for c in clusters_sorted:
             sub = df[df[cluster_col] == c]
-            ax.scatter(
-                sub[x], sub[y],
-                color=color, alpha=0.55, s=18, edgecolors="none",
-                label=f"{cluster_to_label[c]} (n={len(sub):,})",
+            fig.add_trace(
+                go.Scatter(
+                    x=sub[x],
+                    y=sub[y],
+                    mode="markers",
+                    marker=dict(
+                        color=palette[c],
+                        size=6,
+                        opacity=0.55,
+                        line=dict(width=0),
+                    ),
+                    name=f"{cluster_to_label[c]} (n={len(sub):,})",
+                    legendgroup=str(c),
+                    showlegend=(col_idx == 1),
+                    hovertemplate=f"{x}=%{{x:.3f}}<br>{y}=%{{y:.3f}}<extra>{cluster_to_label[c]}</extra>",
+                ),
+                row=1,
+                col=col_idx,
             )
-        ax.set_xlabel(x.replace("_", " "))
-        ax.set_ylabel(y.replace("_", " "))
-        ax.grid(alpha=0.3)
-        ax.set_xlim(-0.02, 1.02)
-        ax.set_ylim(-0.02, 1.02)
-    axes[0].legend(loc="upper left", fontsize=8, framealpha=0.85)
-    fig.suptitle(title, fontsize=12, fontweight="bold")
-    fig.tight_layout(rect=[0, 0, 1, 0.96])
+        fig.update_xaxes(title_text=x.replace("_", " "), range=[-0.02, 1.02], row=1, col=col_idx)
+        fig.update_yaxes(title_text=y.replace("_", " "), range=[-0.02, 1.02], row=1, col=col_idx)
+    fig.update_layout(
+        title=title,
+        height=440,
+        margin=dict(l=60, r=40, t=80, b=60),
+        legend=dict(orientation="h", yanchor="bottom", y=-0.25, xanchor="center", x=0.5),
+    )
+    return _show(fig)
 
 
-def schema_diagram(title: str = "Olist schema — 9 tables, shared keys") -> None:
+# ---------------------------------------------------------------------------
+# Schema + temporal + cardinality (notebook §2)
+# ---------------------------------------------------------------------------
+
+
+def schema_diagram(title: str = "Olist schema — 9 tables, shared keys") -> go.Figure:
     """Render the 9-table Olist schema as boxes + FK arrows.
 
-    Hardcoded layout (the schema is fixed). Box colour encodes role
-    (transactional / dimensional / free-text / geospatial / taxonomy).
+    Hardcoded layout (the schema is fixed). Box colour encodes role.
     """
     role_color = {
         "transactional": "#4C72B0",
@@ -492,28 +693,9 @@ def schema_diagram(title: str = "Olist schema — 9 tables, shared keys") -> Non
         ("customers",      "geolocation",  "zip_prefix"),
         ("sellers",        "geolocation",  "zip_prefix"),
     ]
-
-    fig, ax = plt.subplots(figsize=(11, 7.5))
     box_w, box_h = 1.95, 0.85
 
-    def _wrap(name: str, limit: int = 12) -> str:
-        if len(name) <= limit:
-            return name
-        parts = name.split("_")
-        lines: list[str] = []
-        cur = parts[0]
-        for p in parts[1:]:
-            candidate = f"{cur}_{p}"
-            if len(candidate) <= limit:
-                cur = candidate
-            else:
-                lines.append(cur)
-                cur = p
-        lines.append(cur)
-        return "\n".join(lines)
-
     def _edge_point(cx: float, cy: float, tx: float, ty: float) -> tuple[float, float]:
-        """Where the segment from (cx,cy) toward (tx,ty) exits the (box_w x box_h) box."""
         dx, dy = tx - cx, ty - cy
         if dx == 0 and dy == 0:
             return cx, cy
@@ -525,58 +707,74 @@ def schema_diagram(title: str = "Olist schema — 9 tables, shared keys") -> Non
         s = min(half_w / abs(dx), half_h / abs(dy))
         return cx + dx * s, cy + dy * s
 
-    for name, (x, y, role) in boxes.items():
-        ax.add_patch(
-            plt.Rectangle(
-                (x - box_w / 2, y - box_h / 2),
-                box_w, box_h,
-                facecolor=role_color[role],
-                edgecolor="black",
-                linewidth=0.8,
-                alpha=0.85,
-            )
-        )
-        wrapped = _wrap(name)
-        fontsize = 9.0 if "\n" in wrapped else 9.5
-        ax.text(x, y, wrapped, ha="center", va="center",
-                fontsize=fontsize, color="white", fontweight="bold",
-                linespacing=0.95)
+    fig = go.Figure()
 
+    # FK edges drawn as annotations with arrowheads.
     for src_name, dst_name, key in edges:
         x1, y1, _ = boxes[src_name]
         x2, y2, _ = boxes[dst_name]
         sx, sy = _edge_point(x1, y1, x2, y2)
         ex, ey = _edge_point(x2, y2, x1, y1)
-        ax.annotate(
-            "",
-            xy=(ex, ey),
-            xytext=(sx, sy),
-            arrowprops=dict(arrowstyle="->", color="grey", lw=0.9, alpha=0.8,
-                            shrinkA=0, shrinkB=0),
+        fig.add_annotation(
+            x=ex, y=ey, ax=sx, ay=sy,
+            xref="x", yref="y", axref="x", ayref="y",
+            showarrow=True, arrowhead=2, arrowsize=1, arrowwidth=1.2,
+            arrowcolor="#7f7f7f", standoff=0,
         )
-        ax.text((sx + ex) / 2, (sy + ey) / 2, key, fontsize=7.5, color="black",
-                bbox=dict(boxstyle="round,pad=0.2", facecolor="white", edgecolor="none", alpha=0.9),
-                ha="center", va="center")
+        mx, my = (sx + ex) / 2, (sy + ey) / 2
+        fig.add_annotation(
+            x=mx, y=my, text=key, showarrow=False,
+            font=dict(size=9, color="black"),
+            bgcolor="rgba(255,255,255,0.9)", bordercolor="rgba(0,0,0,0)",
+        )
 
-    handles = [
-        plt.Rectangle((0, 0), 1, 1, facecolor=color, edgecolor="black", alpha=0.85, label=role)
-        for role, color in role_color.items()
-    ]
-    ax.legend(handles=handles, loc="upper center", bbox_to_anchor=(0.5, -0.02),
-              ncol=len(role_color), frameon=False, fontsize=9)
+    # Tables drawn as filled rectangle shapes + a label annotation per box.
+    for name, (x, y, role) in boxes.items():
+        fig.add_shape(
+            type="rect",
+            x0=x - box_w / 2, y0=y - box_h / 2,
+            x1=x + box_w / 2, y1=y + box_h / 2,
+            fillcolor=role_color[role], opacity=0.85,
+            line=dict(color="black", width=0.8),
+            layer="above",
+        )
+        fig.add_annotation(
+            x=x, y=y, text=f"<b>{name}</b>",
+            showarrow=False,
+            font=dict(size=11, color="white"),
+        )
 
-    ax.set_xlim(0, 10)
-    ax.set_ylim(0.5, 8.5)
-    ax.set_aspect("equal")
-    ax.axis("off")
-    ax.set_title(title, fontsize=12, fontweight="bold", pad=10)
-    fig.tight_layout()
+    # Legend rendered as invisible scatter traces.
+    for role, color in role_color.items():
+        fig.add_trace(
+            go.Scatter(
+                x=[None], y=[None],
+                mode="markers",
+                marker=dict(size=12, color=color, opacity=0.85),
+                name=role,
+                showlegend=True,
+            )
+        )
+
+    fig.update_layout(
+        title=dict(text=f"<b>{title}</b>", x=0.5, xanchor="center"),
+        xaxis=dict(range=[0, 10], visible=False),
+        yaxis=dict(range=[0.5, 8.5], visible=False, scaleanchor="x", scaleratio=1),
+        plot_bgcolor="white",
+        height=520,
+        margin=dict(l=20, r=20, t=70, b=70),
+        legend=dict(
+            orientation="h", yanchor="top", y=-0.02, xanchor="center", x=0.5,
+            title=None,
+        ),
+    )
+    return _show(fig)
 
 
-def temporal_overlap_chart(df: pd.DataFrame, *, title: str = "Temporal coverage of timestamp columns") -> None:
+def temporal_overlap_chart(df: pd.DataFrame, *, title: str = "Temporal coverage of timestamp columns") -> go.Figure:
     """Gantt-style horizontal bars per (table, column) timestamp range.
 
-    `df` is the pandas frame returned by `data_foundation.temporal_coverage(...).toPandas()`
+    `df` is the pandas frame from `data_foundation.temporal_coverage(...).toPandas()`
     — columns: table, column, min_ts, max_ts, n_non_null.
     """
     data = df.copy()
@@ -585,51 +783,50 @@ def temporal_overlap_chart(df: pd.DataFrame, *, title: str = "Temporal coverage 
     data["max_ts"] = pd.to_datetime(data["max_ts"])
     data = data.sort_values("min_ts").reset_index(drop=True)
 
-    fig, ax = plt.subplots(figsize=(10, max(3, 0.45 * len(data) + 1)))
-    palette = sns.color_palette("deep", n_colors=data["table"].nunique())
-    table_to_color = {t: palette[i] for i, t in enumerate(sorted(data["table"].unique()))}
-    for i, row in data.iterrows():
-        width = (row["max_ts"] - row["min_ts"]).days
-        ax.barh(i, width, left=row["min_ts"], color=table_to_color[row["table"]],
-                edgecolor="white", height=0.7)
-        ax.text(row["max_ts"], i, f"  n={int(row['n_non_null']):,}", va="center", fontsize=8)
-    ax.set_yticks(range(len(data)))
-    ax.set_yticklabels(data["label"], fontsize=9)
-    ax.invert_yaxis()
-    ax.set_xlabel("date")
-    ax.set_title(title)
-    ax.grid(axis="x", alpha=0.3)
-    fig.autofmt_xdate()
-    fig.tight_layout()
+    fig = px.timeline(
+        data,
+        x_start="min_ts",
+        x_end="max_ts",
+        y="label",
+        color="table",
+        color_discrete_sequence=_CAT_PALETTE,
+        hover_data=["n_non_null"],
+    )
+    fig.update_yaxes(autorange="reversed", title="")
+    fig.update_layout(
+        title=title,
+        xaxis_title="date",
+        height=max(280, 30 * len(data) + 120),
+        margin=dict(l=170, r=40, t=60, b=50),
+    )
+    return _show(fig)
 
 
-def shared_key_grouped_bar(df: pd.DataFrame, *, title: str = "Shared-key cardinality across tables") -> None:
+def shared_key_grouped_bar(df: pd.DataFrame, *, title: str = "Shared-key cardinality across tables") -> go.Figure:
     """Grouped horizontal bar chart: for each shared key, distinct count per table.
 
     `df` from `data_foundation.shared_key_cardinality(...).toPandas()` —
     columns: shared_key, table, approx_distinct.
     """
-    keys = sorted(df["shared_key"].unique())
-    tables = sorted(df["table"].unique())
-    table_to_color = {t: c for t, c in zip(tables, sns.color_palette("deep", n_colors=len(tables)))}
-
-    fig, ax = plt.subplots(figsize=(8.5, max(3, 0.45 * len(keys) * len(tables) + 1)))
-    bar_h = 0.8 / max(len(tables), 1)
-    y_positions = list(range(len(keys)))
-    for ti, t in enumerate(tables):
-        sub = df[df["table"] == t].set_index("shared_key").reindex(keys)
-        offsets = [y + (ti - (len(tables) - 1) / 2) * bar_h for y in y_positions]
-        ax.barh(offsets, sub["approx_distinct"].fillna(0).values,
-                height=bar_h, color=table_to_color[t], edgecolor="white", label=t)
-    ax.set_yticks(y_positions)
-    ax.set_yticklabels(keys)
-    ax.invert_yaxis()
-    ax.set_xscale("log")
-    ax.set_xlabel("approx_count_distinct (log scale)")
-    ax.set_title(title)
-    ax.grid(axis="x", alpha=0.3, which="both")
-    ax.legend(loc="lower right", fontsize=8, ncol=2)
-    fig.tight_layout()
+    fig = px.bar(
+        df,
+        x="approx_distinct",
+        y="shared_key",
+        color="table",
+        orientation="h",
+        barmode="group",
+        color_discrete_sequence=_CAT_PALETTE,
+        log_x=True,
+    )
+    fig.update_layout(
+        title=title,
+        xaxis_title="approx_count_distinct (log scale)",
+        yaxis_title="",
+        height=max(320, 60 * df["shared_key"].nunique() + 120),
+        margin=dict(l=140, r=40, t=60, b=50),
+        legend=dict(orientation="h", yanchor="bottom", y=-0.25, xanchor="center", x=0.5),
+    )
+    return _show(fig)
 
 
 def residual_plot(
@@ -638,28 +835,57 @@ def residual_plot(
     y_true: str,
     y_pred: str,
     title: str = "Residuals — actual vs predicted",
-) -> None:
+) -> go.Figure:
     """Predicted vs actual scatter + residual histogram side-by-side."""
     data = df.copy()
     data["residual"] = data[y_true] - data[y_pred]
-    fig, axes = plt.subplots(1, 2, figsize=(11, 4), gridspec_kw={"width_ratios": [1.2, 1]})
-
-    ax0 = axes[0]
     lim = float(max(data[y_true].max(), data[y_pred].max()))
-    ax0.scatter(data[y_pred], data[y_true], alpha=0.35, s=14, color=_CAT_PALETTE[0], edgecolors="none")
-    ax0.plot([0, lim], [0, lim], color="grey", linewidth=0.8, linestyle="--")
-    ax0.set_xlabel(y_pred.replace("_", " "))
-    ax0.set_ylabel(y_true.replace("_", " "))
-    ax0.set_title(title)
-    ax0.grid(alpha=0.3)
-
-    ax1 = axes[1]
-    ax1.hist(data["residual"], bins=40, color=_CAT_PALETTE[3], edgecolor="white")
-    ax1.axvline(0, color="grey", linewidth=0.8, linestyle="--")
     mean = float(data["residual"].mean())
     std = float(data["residual"].std())
-    ax1.set_xlabel("residual  (actual − predicted)")
-    ax1.set_ylabel("count")
-    ax1.set_title(f"Residual histogram  (μ={mean:.2f}, σ={std:.2f})")
-    ax1.grid(alpha=0.3)
-    fig.tight_layout()
+
+    fig = make_subplots(
+        rows=1, cols=2,
+        column_widths=[0.55, 0.45],
+        subplot_titles=(title, f"Residual histogram  (μ={mean:.2f}, σ={std:.2f})"),
+    )
+    fig.add_trace(
+        go.Scatter(
+            x=data[y_pred], y=data[y_true],
+            mode="markers",
+            marker=dict(size=5, opacity=0.4, color=_CAT_PALETTE[0]),
+            name="observations",
+            hovertemplate=f"{y_pred}=%{{x:.2f}}<br>{y_true}=%{{y:.2f}}<extra></extra>",
+        ),
+        row=1, col=1,
+    )
+    fig.add_trace(
+        go.Scatter(
+            x=[0, lim], y=[0, lim],
+            mode="lines",
+            line=dict(color="grey", width=1, dash="dash"),
+            name="y = x",
+            showlegend=False,
+        ),
+        row=1, col=1,
+    )
+    fig.add_trace(
+        go.Histogram(
+            x=data["residual"], nbinsx=40,
+            marker=dict(color="#d62728", line=dict(color="white", width=0.5)),
+            name="residual",
+            showlegend=False,
+        ),
+        row=1, col=2,
+    )
+    fig.add_vline(x=0, line_dash="dash", line_color="grey", line_width=1, row=1, col=2)
+
+    fig.update_xaxes(title_text=y_pred.replace("_", " "), row=1, col=1)
+    fig.update_yaxes(title_text=y_true.replace("_", " "), row=1, col=1)
+    fig.update_xaxes(title_text="residual  (actual − predicted)", row=1, col=2)
+    fig.update_yaxes(title_text="count", row=1, col=2)
+    fig.update_layout(
+        height=420,
+        margin=dict(l=70, r=40, t=70, b=60),
+        showlegend=False,
+    )
+    return _show(fig)

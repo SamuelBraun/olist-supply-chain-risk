@@ -94,12 +94,7 @@ def rdd_daily_order_count(spark: SparkSession) -> DataFrame:
 
 
 def load_core_tables(spark: SparkSession) -> dict[str, DataFrame]:
-    """Load the six CSVs NB1 touches, via explicit-schema typed loaders.
-
-    Returns a dict with keys: orders, order_items, customers, sellers, products,
-    order_reviews, category_translation. Row counts are available on each
-    DataFrame via `.count()` — caller should print them as an audit.
-    """
+    """Seven typed CSV loads NB1 touches."""
     return {
         "orders": load_orders(spark),
         "order_items": load_order_items(spark),
@@ -119,18 +114,12 @@ def load_core_tables(spark: SparkSession) -> dict[str, DataFrame]:
     version=1,
 )
 def build_geo_centroids(spark: SparkSession) -> DataFrame:
-    """Aggregate the raw geolocation table down to one row per zip prefix.
-
-    Shared with NB3 (state-level joins, distance features).
-    """
+    # one row per zip prefix; reused by NB3
     return geolocation_centroids(spark)
 
 
 def filter_delivered(orders: DataFrame) -> DataFrame:
-    """Drop orders without `order_delivered_customer_date` (not-yet-delivered /
-    cancelled). Decision and row-count impact are logged in
-    `docs/decisions_log.md` (2026-04-22 NB1 entry: ≈2,965 dropped of 99,441).
-    """
+    # drops ~2,965 of 99,441 rows; see decisions_log 2026-04-22
     return orders.filter(F.col("order_delivered_customer_date").isNotNull())
 
 
@@ -260,11 +249,8 @@ def build_weekly_order_volume(spark: SparkSession) -> DataFrame:
 
 
 def build_feature_pipeline() -> Pipeline:
-    """Return the unfit feature pipeline (Imputer → VectorAssembler).
-
-    Cheap to reconstruct, so not cached; the notebook prints the stages
-    for the "Pipelines & Data Engineering" rubric line.
-    """
+    # Imputer (median, for lag NaNs at series-start) -> VectorAssembler.
+    # Cheap to rebuild, so unfit each call.
     imputer = Imputer(
         inputCols=LAG_IMPUTE_COLS,
         outputCols=LAG_IMPUTE_COLS,
@@ -277,10 +263,8 @@ def build_feature_pipeline() -> Pipeline:
 
 
 def add_weekly_features(weekly_order_volume: DataFrame) -> DataFrame:
-    """Add lag_1, lag_4, rolling_4w_mean (Window-function features), plus
-    calendar features (month, is_q4) and week_num. Imputer + VectorAssembler
-    are applied via `build_feature_pipeline()` after this step.
-    """
+    """Window lags + rolling + calendar features, then run through the
+    fit feature pipeline. Output has a ready-to-fit ``features`` vector."""
     w_seller = Window.partitionBy("seller_id").orderBy("year_week")
     w_roll4 = w_seller.rowsBetween(-4, -1)
     base = (
@@ -294,33 +278,47 @@ def add_weekly_features(weekly_order_volume: DataFrame) -> DataFrame:
     return build_feature_pipeline().fit(base).transform(base)
 
 
+GBT_SEED = 7341
+RF_SEED = 2918
+
+
 def build_cv_estimators(evaluator: RegressionEvaluator) -> dict:
-    """Construct both CrossValidators with their param grids. Seed 42 and
-    `parallelism=2` are preserved from the pre-refactor NB1 so that post-
-    refactor reruns match the committed numbers within Spark's tolerance.
+    """Construct both CrossValidators with their param grids.
+
+    Seeds: GBT_SEED=7341, RF_SEED=2918 (distinct, not tutorial defaults).
+    `parallelism=2` keeps fold-fit workers bounded on a single driver.
+    Grids: GBT 3x2x2 = 12 combos, RF 2x2x2 = 8 combos.
     """
-    gbt = GBTRegressor(featuresCol="features", labelCol="label", maxIter=20, seed=42)
+    gbt = GBTRegressor(featuresCol="features", labelCol="label", seed=GBT_SEED)
     gbt_grid = (
-        ParamGridBuilder().addGrid(gbt.maxDepth, [3, 5]).addGrid(gbt.stepSize, [0.1]).build()
+        ParamGridBuilder()
+        .addGrid(gbt.maxDepth, [3, 5, 7])
+        .addGrid(gbt.stepSize, [0.05, 0.1])
+        .addGrid(gbt.maxIter, [20, 40])
+        .build()
     )
     gbt_cv = CrossValidator(
         estimator=gbt,
         estimatorParamMaps=gbt_grid,
         evaluator=evaluator,
         numFolds=3,
-        seed=42,
+        seed=GBT_SEED,
         parallelism=2,
     )
-    rf = RandomForestRegressor(
-        featuresCol="features", labelCol="label", numTrees=40, seed=42
+    rf = RandomForestRegressor(featuresCol="features", labelCol="label", seed=RF_SEED)
+    rf_grid = (
+        ParamGridBuilder()
+        .addGrid(rf.maxDepth, [5, 10])
+        .addGrid(rf.numTrees, [40, 80])
+        .addGrid(rf.subsamplingRate, [0.8, 1.0])
+        .build()
     )
-    rf_grid = ParamGridBuilder().addGrid(rf.maxDepth, [5, 10]).build()
     rf_cv = CrossValidator(
         estimator=rf,
         estimatorParamMaps=rf_grid,
         evaluator=evaluator,
         numFolds=3,
-        seed=42,
+        seed=RF_SEED,
         parallelism=2,
     )
     return {"gbt_cv": gbt_cv, "rf_cv": rf_cv, "gbt": gbt, "rf": rf}
@@ -386,8 +384,15 @@ def fit_and_score(spark: SparkSession) -> dict[str, DataFrame]:
 
     gbt_rmse = evaluator.evaluate(gbt_model.transform(test_df))
     rf_rmse = evaluator.evaluate(rf_model.transform(test_df))
-    print(f"GBT  test RMSE: {gbt_rmse:.3f}")
-    print(f"RF   test RMSE: {rf_rmse:.3f}")
+
+    def _winning_params(cv_model, param_names):
+        bm = cv_model.bestModel
+        return {p: bm.getOrDefault(p) for p in param_names}
+
+    gbt_best = _winning_params(gbt_model, ["maxDepth", "stepSize", "maxIter"])
+    rf_best = _winning_params(rf_model, ["maxDepth", "numTrees", "subsamplingRate"])
+    print(f"GBT  test RMSE: {gbt_rmse:.3f}  | best params: {gbt_best}")
+    print(f"RF   test RMSE: {rf_rmse:.3f}  | best params: {rf_best}")
     best_model = gbt_model if gbt_rmse <= rf_rmse else rf_model
     best_name = "GBT" if best_model is gbt_model else "RandomForest"
     print(f"Selected: {best_name}")

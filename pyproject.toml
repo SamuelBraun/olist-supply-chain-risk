@@ -12,8 +12,8 @@ dependencies = [
     "findspark>=2.0",
     "torch>=1.13",
     "pandas>=1.5,<2.3",
-    "matplotlib>=3.6",
-    "seaborn>=0.12",
+    "plotly>=5.18",
+    "kaleido>=1.0.0",
     "jupyter>=1.0",
     "nbconvert>=7.0",
 ]

@@ -173,9 +173,7 @@ def risk_band_counts(risk: DataFrame) -> DataFrame:
 
 
 def top50_for_quadrant(risk: DataFrame):
-    """Return the top-50 highest-risk sellers as a pandas DataFrame for the
-    quadrant scatter chart.
-    """
+    # 50-row pandas for the quadrant scatter; safety escape tagged below.
     # BIG-DATA-SAFETY-ESCAPE: TOP50_VIZ — capped at 50 rows
     return risk.orderBy(F.col("risk_score").desc()).limit(50).toPandas()
 
@@ -188,7 +186,60 @@ RISK_ARCHETYPE_LABELS = {
 }
 
 
-def risk_archetypes(risk: DataFrame, k: int = 4, seed: int = 42):
+KMEANS_SEED = 8825
+
+
+@step(
+    name="convergence.kmeans_elbow",
+    inputs=["outputs/seller_risk_index.parquet"],
+    outputs=["outputs/nb6_kmeans_elbow.parquet"],
+    code_deps=_CONV_CODE_DEPS,
+    version=1,
+)
+def kmeans_elbow_sweep(
+    risk: DataFrame,
+    *,
+    k_values: tuple[int, ...] = (2, 3, 4, 5, 6),
+    seed: int = KMEANS_SEED,
+) -> DataFrame:
+    """Sweep K-Means over ``k_values`` and return a small DataFrame
+    ``(k, wssse)`` for the elbow-method justification of k=4.
+
+    ``wssse`` is ``model.summary.trainingCost`` — the within-set sum of
+    squared errors. The elbow is the point where WSSSE stops dropping
+    sharply as k increases. Persisted to ``outputs/nb6_kmeans_elbow.parquet``
+    so the chart in §6.3 of the notebook reads from parquet, deterministically.
+    """
+    from pyspark.ml.clustering import KMeans
+    from pyspark.ml.feature import VectorAssembler
+
+    components = ["demand_norm", "sentiment_norm", "network_norm"]
+    assembler = VectorAssembler(inputCols=components, outputCol="features_elbow")
+    feats = assembler.transform(risk).cache()
+    try:
+        rows = []
+        for k in k_values:
+            km = KMeans(
+                k=k,
+                seed=seed,
+                featuresCol="features_elbow",
+                predictionCol="cluster",
+            )
+            model = km.fit(feats)
+            wssse = float(model.summary.trainingCost)
+            rows.append({"k": int(k), "wssse": wssse})
+    finally:
+        feats.unpersist()
+    spark = risk.sparkSession
+    return spark.createDataFrame(rows).orderBy("k")
+
+
+def load_kmeans_elbow(spark: SparkSession) -> DataFrame:
+    """Read the cached elbow-sweep parquet (one row per k)."""
+    return spark.read.parquet(resolve_path("outputs/nb6_kmeans_elbow.parquet"))
+
+
+def risk_archetypes(risk: DataFrame, k: int = 4, seed: int = KMEANS_SEED):
     """Cluster sellers in the (demand_norm, sentiment_norm, network_norm)
     space via Spark ML K-Means, then label each cluster by which axis
     dominates its centroid. Returns (clustered_pdf, summary_pdf):
@@ -247,7 +298,7 @@ def risk_archetypes(risk: DataFrame, k: int = 4, seed: int = 42):
         .orderBy(F.col("mean_risk_score").desc())
     )
 
-    # BIG-DATA-SAFETY-ESCAPE: PANDAS_MATPLOTLIB_VIZ — ~3000-row scatter feed
+    # BIG-DATA-SAFETY-ESCAPE: PLOTLY_STATIC_VIZ — ~3000-row scatter feed
     clustered_pdf = clustered.select(
         "seller_id", "seller_state", "demand_norm", "sentiment_norm",
         "network_norm", "risk_score", "risk_class", "cluster", "archetype",

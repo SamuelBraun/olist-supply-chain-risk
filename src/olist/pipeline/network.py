@@ -156,10 +156,7 @@ def build_edges(spark: SparkSession) -> DataFrame:
 
 
 def build_graph_frame(spark: SparkSession):
-    """Assemble the `GraphFrame(v, e)` from cached parquet vertex / edge sets.
-    Cheap to reconstruct — the expensive compute is the GraphFrame algorithms,
-    each of which is its own cached step.
-    """
+    # Cheap; algorithms are cached individually so we just re-load v, e here.
     from graphframes import GraphFrame
 
     vertices = spark.read.parquet(resolve_path("outputs/_cache/network_vertices.parquet"))
@@ -204,10 +201,7 @@ def seller_degree_stats(spark: SparkSession) -> DataFrame:
     version=1,
 )
 def compute_pagerank(spark: SparkSession) -> DataFrame:
-    """PageRank over the bidirectional graph. Seller vertices only,
-    column renamed to `pagerank_score` for downstream consumers.
-    `resetProbability=0.15` + `maxIter=10` match the pre-refactor NB3.
-    """
+    """PageRank on the bidirectional graph; sellers only. resetProb=0.15, maxIter=10."""
     gf = build_graph_frame(spark)
     pr = gf.pageRank(resetProbability=0.15, maxIter=10)
     return pr.vertices.filter(F.col("type") == "seller").select(
@@ -226,14 +220,8 @@ def compute_pagerank(spark: SparkSession) -> DataFrame:
     version=1,
 )
 def compute_connected_components(spark: SparkSession) -> DataFrame:
-    """Connected components via the GraphX-backed algorithm.
-
-    The default message-passing variant OOMs the JVM heap on ~100k vertices
-    even at 6g driver memory (see decisions_log.md 2026-04-22 NB3 entry);
-    GraphX CC is more memory-efficient. Returns per-vertex (id, type,
-    component, component_size). Flagged sellers with component_size == 1
-    are "isolated".
-    """
+    # GraphX variant: the default CC OOMs the 6g driver on ~100k vertices.
+    # See decisions_log 2026-04-22. component_size == 1 => isolated seller.
     gf = build_graph_frame(spark)
     root = Path(__file__).resolve().parents[3]
     checkpoint_dir = root / "outputs" / "_gf_checkpoints"
@@ -310,13 +298,13 @@ def compute_shared_customer_motifs(spark: SparkSession) -> DataFrame:
     version=1,
 )
 def compute_bfs_backups(spark: SparkSession) -> DataFrame:
-    """For each of the top-10 PageRank sellers, run a BFS up to path-length 3
-    to the nearest other seller vertex. The first hit is reported as the
-    backup seller. Returns (seller_id, backup_seller_id).
+    """For each top-10 PageRank seller, BFS up to length 3 to the nearest
+    other seller. Returns (seller_id, backup_seller_id, hop_count).
 
-    Two flagged escapes: TOP10_PAGERANK_DRIVER (driver-side list of 10 ids)
-    and BFS_BACKUP_COLLECT (one row per loop iteration). Both are capped
-    by construction.
+    hop_count = path length to the backup (1, 2, or 3); null if no path
+    found within the cap. The distribution of hop_count is a graph-native
+    finding: it tells us how far the structural hubs are from their
+    nearest substitute, which is impossible to derive without traversal.
     """
     seller_pagerank = spark.read.parquet(resolve_path("outputs/_cache/network_pagerank.parquet"))
     gf = build_graph_frame(spark)
@@ -327,7 +315,7 @@ def compute_bfs_backups(spark: SparkSession) -> DataFrame:
         .limit(10)
         .collect()
     ]
-    backup_rows: list[tuple[str, str | None]] = []
+    backup_rows: list[tuple[str, str | None, int | None]] = []
     for seller_id in top10:
         paths = gf.bfs(
             fromExpr=f"id = '{seller_id}'",
@@ -336,10 +324,17 @@ def compute_bfs_backups(spark: SparkSession) -> DataFrame:
         )
         # BIG-DATA-SAFETY-ESCAPE: BFS_BACKUP_COLLECT — limit(1) per iteration
         first = paths.limit(1).collect()
-        backup = first[0]["to"]["id"] if first else None
-        backup_rows.append((seller_id, backup))
+        if not first:
+            backup_rows.append((seller_id, None, None))
+            continue
+        # BFS returns paths of identical length per call (level-wise expansion),
+        # so the schema's e* column count == hop count for every returned row.
+        n_hops = sum(1 for c in paths.columns if c.startswith("e"))
+        backup = first[0]["to"]["id"]
+        backup_rows.append((seller_id, backup, int(n_hops)))
     return spark.createDataFrame(
-        backup_rows, "seller_id string, backup_seller_id string"
+        backup_rows,
+        "seller_id string, backup_seller_id string, hop_count integer",
     )
 
 
@@ -354,10 +349,8 @@ def compute_bfs_backups(spark: SparkSession) -> DataFrame:
     version=1,
 )
 def compute_delayed_subgraph_pagerank(spark: SparkSession) -> DataFrame:
-    """Induced subgraph over edges with avg_delay > 5 days; re-run PageRank.
-    Seller vertices with high rank here are structurally central to the
-    *late-shipping* part of the network. Column renamed `network_risk_score`.
-    """
+    # Induced subgraph on slow edges (avg_delay > 5d), then PageRank again.
+    # The high-ranked sellers here are contagion hubs for late shipping.
     from graphframes import GraphFrame
 
     vertices = spark.read.parquet(resolve_path("outputs/_cache/network_vertices.parquet"))

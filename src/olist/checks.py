@@ -204,7 +204,7 @@ def check_safety_log_consistency() -> CheckResult:
     """Every ID in `safety.ALL_ESCAPES` must appear in
     `docs/big_data_safety_log.md` and be tagged as
     `# BIG-DATA-SAFETY-ESCAPE: <ID>` somewhere in `src/olist/pipeline/*.py`
-    or in a notebook (matplotlib-rendering IDs live in notebooks).
+    or in a notebook (chart-rendering IDs live in notebooks).
     """
     root = project_root()
     log_text = (root / "docs" / "big_data_safety_log.md").read_text()

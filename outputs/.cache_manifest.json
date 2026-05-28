@@ -1,15 +1,23 @@
 {
   "entries": {
+    "convergence.kmeans_elbow": {
+      "fingerprint": "cd5ef8c677686cd0d0f4f21e0cc91a05699183c50785ab23d196fee32edd0ca8",
+      "outputs": [
+        "outputs/nb6_kmeans_elbow.parquet"
+      ],
+      "version": 1,
+      "written_at": "2026-05-21T14:41:49"
+    },
     "convergence.seller_risk_index": {
-      "fingerprint": "51b5e32194ea5fba9ab8de1a7b7417b1278955874a223c72e7d6b982695ed861",
+      "fingerprint": "8d2e23dfa03d45cd0fb4b1b73c99f7eecd2f59c76a7ac1801ca6f7784434fa98",
       "outputs": [
         "outputs/seller_risk_index.parquet"
       ],
       "version": 1,
-      "written_at": "2026-04-25T15:31:38"
+      "written_at": "2026-05-21T14:41:43"
     },
     "demand.fit_and_score": {
-      "fingerprint": "76d063704c051e7be1cc6931a0d455e88b0d3b930395f67f563eb7ccf4917fca",
+      "fingerprint": "fc17c7ffe5aefe8ecb555d8b68f42af30abe7d14f3644fe96857489a34f585de",
       "outputs": [
         "outputs/_cache/demand_predictions.parquet",
         "outputs/_cache/demand_metrics.parquet",
@@ -17,7 +25,7 @@
         "outputs/nb1_seller_demand_scores.parquet"
       ],
       "version": 2,
-      "written_at": "2026-04-24T22:26:22"
+      "written_at": "2026-05-21T14:39:39"
     },
     "demand.geo_centroids": {
       "fingerprint": "045373662ab66707fde1733be0df0ecc2d6274636677f840dbc3c8bebbe104c8",
@@ -28,20 +36,20 @@
       "written_at": "2026-04-24T22:24:08"
     },
     "demand.order_lines": {
-      "fingerprint": "176d296f99cab49f4f9399ce259819ecafdddf535bbfbc75e14d8b1684d7fe1c",
+      "fingerprint": "d561388dfd9df03ec7f75bd6202b1b80d68f437506c0e8afad1ca1bd4a12ade8",
       "outputs": [
         "outputs/_cache/demand_order_lines.parquet"
       ],
       "version": 1,
-      "written_at": "2026-04-24T22:23:04"
+      "written_at": "2026-05-28T15:09:24"
     },
     "demand.weekly_order_volume": {
-      "fingerprint": "815561fc34892582868dc7df729c07ee2c4aadfdaa408709442644a2059463c9",
+      "fingerprint": "26bde3042e5fddcd3057fd99200705e0926bc1f2c97c10ef4e5264b4dcb68098",
       "outputs": [
         "outputs/nb1_weekly_order_volume.parquet"
       ],
       "version": 1,
-      "written_at": "2026-04-24T22:24:09"
+      "written_at": "2026-05-28T15:09:42"
     },
     "network.bfs_backups": {
       "fingerprint": "4f63a151b99d7c5e74b89c836da49fec9e93f33f3bcbecb86220e4af5fbb8654",
@@ -116,36 +124,36 @@
       "written_at": "2026-04-24T22:16:46"
     },
     "sentiment.lead_indicator_lags": {
-      "fingerprint": "4ff752d3b30c414540843b3aacaface846186456c9f694569d6253316fab0af4",
+      "fingerprint": "cb74f418be4921a4bf572cca5363160c84725137a1b4e8043118415ef7ba3b03",
       "outputs": [
         "outputs/_cache/sentiment_lead_lags.parquet"
       ],
       "version": 1,
-      "written_at": "2026-04-24T22:30:20"
+      "written_at": "2026-05-21T14:41:30"
     },
     "sentiment.lstm_metrics": {
-      "fingerprint": "b45bcfeb4567e5135b8bb4101e11be9906fb37708505d49992dd719580e422f3",
+      "fingerprint": "4b10f851efa99a105929379458624b7afcf9948e920756fccbe627db944eaf79",
       "outputs": [
         "outputs/_cache/sentiment_lstm_metrics.parquet"
       ],
       "version": 1,
-      "written_at": "2026-04-24T22:02:03"
+      "written_at": "2026-05-21T14:41:15"
     },
     "sentiment.reviews_with_seller": {
-      "fingerprint": "2fdbaa4fbcac4b7cdeabb4114e9881f759201f59a8bb668b509714d82b04638f",
+      "fingerprint": "2d56ac05f21c4dbad9c07ba970844329e7023fc965b777f5edb2aca3f67831bf",
       "outputs": [
         "outputs/_cache/sentiment_reviews_with_seller.parquet"
       ],
       "version": 1,
-      "written_at": "2026-04-24T22:01:08"
+      "written_at": "2026-05-21T14:39:49"
     },
     "sentiment.seller_scores": {
-      "fingerprint": "12df05ed714908a8d02fab788aaca461185faf31f27f9d0e679b977e3e5770b6",
+      "fingerprint": "299f8f54312b9693946f8ca8b707a6b5f6bbc4ef0a59b1cecfec824d26394d6d",
       "outputs": [
         "outputs/nb2_seller_sentiment_scores.parquet"
       ],
       "version": 1,
-      "written_at": "2026-04-24T22:09:29"
+      "written_at": "2026-05-21T14:41:36"
     }
   },
   "version": 1

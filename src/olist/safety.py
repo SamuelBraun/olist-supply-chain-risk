@@ -47,11 +47,12 @@ BFS_BACKUP_COLLECT = "BFS_BACKUP_COLLECT"
 #: for the lag-vs-correlation chart.
 LEAD_INDICATOR_VIZ = "LEAD_INDICATOR_VIZ"
 
-#: pandas/matplotlib/seaborn used for static charts from pre-aggregated /
-#: pre-capped Spark frames. Spark has no native chart surface; the only
-#: production alternative is to write the aggregate to parquet and render
-#: it in a BI tool.
-PANDAS_MATPLOTLIB_VIZ = "PANDAS_MATPLOTLIB_VIZ"
+#: pandas + Plotly (with Kaleido for static PNG) used for charts from pre-
+#: aggregated / pre-capped Spark frames. Spark has no native chart surface;
+#: Plotly's payload is a JSON description of the figure (independent of
+#: upstream Spark dataset size), but the upstream `toPandas()` still
+#: requires the aggregate to fit on the driver — hence the escape.
+PLOTLY_STATIC_VIZ = "PLOTLY_STATIC_VIZ"
 
 #: `row_counts.first()` / `.collect()` on a one-row aggregate DataFrame —
 #: the standard Spark idiom for extracting a scalar from a driver-side reduce.
@@ -69,6 +70,6 @@ ALL_ESCAPES: tuple[str, ...] = (
     TOP10_PAGERANK_DRIVER,
     BFS_BACKUP_COLLECT,
     LEAD_INDICATOR_VIZ,
-    PANDAS_MATPLOTLIB_VIZ,
+    PLOTLY_STATIC_VIZ,
     SMALL_SUMMARY_COLLECT,
 )

@@ -26,6 +26,7 @@ from pyspark.ml import Pipeline
 from pyspark.ml.classification import LogisticRegression
 from pyspark.ml.evaluation import BinaryClassificationEvaluator
 from pyspark.ml.feature import HashingTF, IDF, StopWordsRemover, Tokenizer
+from pyspark.ml.tuning import CrossValidator, ParamGridBuilder
 from pyspark.sql import DataFrame, SparkSession
 from pyspark.sql import functions as F
 from pyspark.sql.window import Window
@@ -54,7 +55,8 @@ LSTM_EMBED_DIM = 64
 LSTM_HIDDEN_DIM = 64
 LSTM_EPOCHS = 3
 LSTM_BATCH_SIZE = 128
-LSTM_SEED = 42
+LSTM_SEED = 1394
+NLP_SPLIT_SEED = 5067
 
 _TOKEN_RE = re.compile(r"[a-záàâãéêíóôõúüç]+", re.IGNORECASE)
 
@@ -122,11 +124,7 @@ LEFT JOIN sellers s ON oi.seller_id = s.seller_id
 
 
 def label_reviews(reviews_with_seller: DataFrame) -> DataFrame:
-    """Binarise review_score: ≥4 → 1, ≤2 → 0, drop neutrals (==3).
-
-    The dropped-row rationale is logged in `docs/decisions_log.md` (2026-04-22
-    NB2 entry: ≈82/18 positive/negative class balance after the drop).
-    """
+    # >=4 -> pos, <=2 -> neg, drop neutrals. ~82/18 class balance after.
     return (
         reviews_with_seller.filter(F.col("review_score").isNotNull())
         .withColumn(
@@ -138,9 +136,7 @@ def label_reviews(reviews_with_seller: DataFrame) -> DataFrame:
 
 
 def build_nlp_pipeline() -> Pipeline:
-    """Return the unfit NLP pipeline required by the rubric:
-    Tokenizer → StopWordsRemover(portuguese) → HashingTF → IDF → LogisticRegression.
-    """
+    """Tokenizer + PT stopwords + HashingTF + IDF + LR. Unfit."""
     pt_stopwords = StopWordsRemover.loadDefaultStopWords("portuguese")
     tokenizer = Tokenizer(inputCol="text", outputCol="tokens")
     stop_remover = StopWordsRemover(
@@ -155,24 +151,68 @@ def build_nlp_pipeline() -> Pipeline:
 
 
 def fit_nlp_pipeline(labelled: DataFrame) -> dict:
-    """Filter to rows with non-null comments, train the NLP pipeline on an
-    80/20 split (seed=42), evaluate AUC on the test split. Returns a dict
-    with `pipeline_model`, `test_auc`, `train_df`, `test_df`, `test_preds`.
+    """Filter to rows with non-null comments, fit the NLP pipeline under a
+    3-fold ``CrossValidator`` over the LogisticRegression regulariser, and
+    evaluate the best model's AUC on the held-out test split.
+
+    Tunes `regParam ∈ {0.0, 0.01, 0.1}` and `elasticNetParam ∈ {0.0, 0.5}`
+    (6 combinations × 3 folds = 18 sub-fits) with
+    ``BinaryClassificationEvaluator(areaUnderROC)``. CV counts toward the
+    rubric's `check_cv_models ≥ 3` assertion (alongside GBT + RF in demand).
+
+    Returns a dict with `pipeline_model` (the best fit), `test_auc`,
+    `best_params` (the chosen `regParam` / `elasticNetParam`), `cv_avg_metrics`
+    (mean AUC per param combo), `train_df`, `test_df`, `test_preds`.
     """
     text_labelled = (
         labelled.filter(F.col("review_comment_message").isNotNull())
         .withColumn("text", F.lower(F.col("review_comment_message")))
         .select("text", "label")
     )
-    train_df, test_df = text_labelled.randomSplit([0.8, 0.2], seed=42)
-    model = build_nlp_pipeline().fit(train_df)
-    preds = model.transform(test_df)
-    auc = BinaryClassificationEvaluator(
+    train_df, test_df = text_labelled.randomSplit([0.8, 0.2], seed=NLP_SPLIT_SEED)
+
+    nlp_pipeline = build_nlp_pipeline()
+    lr_stage: LogisticRegression = nlp_pipeline.getStages()[-1]
+    param_grid = (
+        ParamGridBuilder()
+        .addGrid(lr_stage.regParam, [0.0, 0.01, 0.1])
+        .addGrid(lr_stage.elasticNetParam, [0.0, 0.5])
+        .build()
+    )
+    evaluator = BinaryClassificationEvaluator(
         labelCol="label", metricName="areaUnderROC"
-    ).evaluate(preds)
+    )
+    cv = CrossValidator(
+        estimator=nlp_pipeline,
+        estimatorParamMaps=param_grid,
+        evaluator=evaluator,
+        numFolds=3,
+        seed=NLP_SPLIT_SEED,
+        parallelism=2,
+        collectSubModels=False,
+    )
+    cv_model = cv.fit(train_df)
+    best_model = cv_model.bestModel
+    best_lr = best_model.stages[-1]
+    best_params = {
+        "regParam": float(best_lr.getRegParam()),
+        "elasticNetParam": float(best_lr.getElasticNetParam()),
+    }
+    cv_avg_metrics = [
+        {
+            "regParam": float(pm[lr_stage.regParam]),
+            "elasticNetParam": float(pm[lr_stage.elasticNetParam]),
+            "cv_avg_auc": float(metric),
+        }
+        for pm, metric in zip(param_grid, cv_model.avgMetrics)
+    ]
+    preds = best_model.transform(test_df)
+    auc = evaluator.evaluate(preds)
     return {
-        "pipeline_model": model,
+        "pipeline_model": best_model,
         "test_auc": float(auc),
+        "best_params": best_params,
+        "cv_avg_metrics": cv_avg_metrics,
         "train_df": train_df,
         "test_df": test_df,
         "test_preds": preds,
@@ -402,12 +442,7 @@ def weekly_sentiment_rollup(reviews_with_seller: DataFrame) -> DataFrame:
 
 
 def confusion_counts(test_preds: DataFrame) -> DataFrame:
-    """4-row summary DataFrame: ``label``, ``prediction``, ``n``.
-
-    Feeds :func:`olist.viz.confusion_matrix_heatmap`. Pure Spark groupBy —
-    the materialisation happens at render time via ``.toPandas()`` on
-    this already-tiny frame (4 rows).
-    """
+    # 4-row groupBy. materialisation only at render time.
     return (
         test_preds.groupBy("label", "prediction")
         .count()
@@ -421,11 +456,7 @@ def top_sellers_by_reviews(
     *,
     k: int = 5,
 ) -> DataFrame:
-    """Filter ``weekly_with_trend`` to the top-``k`` sellers by total review
-    count (summed across all weeks). Returned long-format DF has columns
-    ``seller_id, year_week, avg_score_week, rolling_6w_mean, n_reviews_week``
-    — suitable for :func:`olist.viz.weekly_trend_multiline`.
-    """
+    """Top-k sellers by total review count, long-format for the multiline chart."""
     totals = (
         weekly_with_trend.groupBy("seller_id")
         .agg(F.sum("n_reviews_week").alias("total_reviews"))
