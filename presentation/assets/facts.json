@@ -1,0 +1,161 @@
+{
+  "late_rate_pct": 8.11,
+  "late_n": 7827,
+  "total_orders": 96476,
+  "one_in_x": 12.0,
+  "top50_share_pct": 32.2,
+  "total_revenue_brl": 15843553.239999324,
+  "delay_risk_n": 66,
+  "demand_total": 2970,
+  "declining_n": 491,
+  "declining_pct": 15.9,
+  "declining_total": 3090,
+  "top_pagerank_score": 643.5,
+  "top_pagerank_in_degree": 1790,
+  "top_pagerank_customer_share_pct": 1.86,
+  "customers_total": 96096,
+  "gbt_rmse": 4.94,
+  "rf_rmse": 5.05,
+  "best_demand_model": "GBT",
+  "lstm_auc": 0.9619,
+  "state": {
+    "worst_state": "AL",
+    "worst_pct": 23.929471032745592,
+    "best_state": "SC",
+    "best_pct": 9.754722300535663
+  },
+  "lag": {
+    "peak_lag": 7,
+    "peak_abs_corr": 0.014655917170529201
+  },
+  "bands": {
+    "safe": 2899,
+    "warn": 68,
+    "crit": 0,
+    "total": 2967
+  },
+  "archetypes": {
+    "clusters": [
+      {
+        "cluster": 1,
+        "n_sellers": 109,
+        "mean_risk_score": 0.41218820454051414,
+        "mean_demand_norm": 0.2622643844323569,
+        "mean_sentiment_norm": 0.9079016385058151,
+        "mean_network_norm": 0.00876698837384592
+      },
+      {
+        "cluster": 2,
+        "n_sellers": 359,
+        "mean_risk_score": 0.2668867432512285,
+        "mean_demand_norm": 0.23626391626354828,
+        "mean_sentiment_norm": 0.5134915174965031,
+        "mean_network_norm": 0.014907804784035047
+      },
+      {
+        "cluster": 3,
+        "n_sellers": 1379,
+        "mean_risk_score": 0.17531246509398474,
+        "mean_demand_norm": 0.23087595305862238,
+        "mean_sentiment_norm": 0.2472734039452314,
+        "mean_network_norm": 0.026533967142118864
+      },
+      {
+        "cluster": 0,
+        "n_sellers": 1120,
+        "mean_risk_score": 0.09883254032144194,
+        "mean_demand_norm": 0.22493840354437866,
+        "mean_sentiment_norm": 0.05525283798753997,
+        "mean_network_norm": 0.002552019284234689
+      }
+    ],
+    "labels": [
+      "Elevated risk",
+      "Watchlist",
+      "Healthy mainstream",
+      "Best in class"
+    ]
+  },
+  "top10_pagerank": [
+    {
+      "rank": 1,
+      "seller_id": "6560211a\u2026",
+      "pagerank": 643.5,
+      "in_deg": 1790,
+      "share": 100.0,
+      "net_risk": 16.129
+    },
+    {
+      "rank": 2,
+      "seller_id": "4a3ca931\u2026",
+      "pagerank": 610.6,
+      "in_deg": 1759,
+      "share": 94.9,
+      "net_risk": 43.191
+    },
+    {
+      "rank": 3,
+      "seller_id": "cc419e06\u2026",
+      "pagerank": 580.4,
+      "in_deg": 1607,
+      "share": 90.2,
+      "net_risk": 14.673
+    },
+    {
+      "rank": 4,
+      "seller_id": "1f50f920\u2026",
+      "pagerank": 493.8,
+      "in_deg": 1383,
+      "share": 76.7,
+      "net_risk": 27.199
+    },
+    {
+      "rank": 5,
+      "seller_id": "955fee92\u2026",
+      "pagerank": 458.1,
+      "in_deg": 1256,
+      "share": 71.2,
+      "net_risk": 15.022
+    },
+    {
+      "rank": 6,
+      "seller_id": "da8622b1\u2026",
+      "pagerank": 454.5,
+      "in_deg": 1272,
+      "share": 70.6,
+      "net_risk": 17.412
+    },
+    {
+      "rank": 7,
+      "seller_id": "7a67c85e\u2026",
+      "pagerank": 410.9,
+      "in_deg": 1140,
+      "share": 63.9,
+      "net_risk": 11.332
+    },
+    {
+      "rank": 8,
+      "seller_id": "4869f7a5\u2026",
+      "pagerank": 405.3,
+      "in_deg": 1117,
+      "share": 63.0,
+      "net_risk": 29.413
+    },
+    {
+      "rank": 9,
+      "seller_id": "ea8482cd\u2026",
+      "pagerank": 404.7,
+      "in_deg": 1119,
+      "share": 62.9,
+      "net_risk": 19.45
+    },
+    {
+      "rank": 10,
+      "seller_id": "3d871de0\u2026",
+      "pagerank": 383.8,
+      "in_deg": 1058,
+      "share": 59.6,
+      "net_risk": 14.284
+    }
+  ]
+}

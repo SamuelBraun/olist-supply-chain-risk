@@ -1,0 +1,1935 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>Olist Supply-Chain Risk Intelligence — BigDataCompany × NOVA IMS</title>
+<style>
+  /* ============================================================
+     NOVA IMS brand palette + base type
+     ============================================================ */
+  :root {
+    --ink:        #0A0A0A;
+    --paper:     #FFFFFF;
+    --paper-2:   #F4F4F1;
+    --line:      #1A1A1A;
+    --mute:      #6B6B6B;
+
+    --blue:      #3777FF;
+    --green:     #0EE071;
+    --yellow:    #F6DA00;
+    --pink:      #FF009C;
+    --orange:    #FF4011;
+
+    --c-demand:    var(--blue);
+    --c-sentiment: var(--pink);
+    --c-network:   var(--green);
+    --c-spark:     var(--orange);
+
+    --slide-w: 1920px;
+    --slide-h: 1080px;
+  }
+
+  @font-face {
+    font-family: "Borna";
+    src: local("Borna"), local("Inter"), local("Helvetica Neue");
+    font-display: swap;
+  }
+
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+
+  html, body {
+    height: 100%;
+    overflow: hidden;
+    background: #0a0a0a;
+    color: var(--ink);
+    font-family: "Borna", "Inter", "Helvetica Neue", Arial, sans-serif;
+    font-feature-settings: "ss01", "tnum";
+    -webkit-font-smoothing: antialiased;
+    -moz-osx-font-smoothing: grayscale;
+  }
+
+  /* ============================================================
+     Stage — fits a 1920×1080 logical slide to the viewport
+     ============================================================ */
+  .stage {
+    position: fixed;
+    inset: 0;
+    display: grid;
+    place-items: center;
+  }
+
+  .slide {
+    position: absolute;
+    width: var(--slide-w);
+    height: var(--slide-h);
+    background: var(--paper);
+    overflow: hidden;
+    transform-origin: center center;
+    opacity: 0;
+    visibility: hidden;
+    transition: opacity .35s ease;
+    will-change: transform, opacity;
+  }
+  .slide.active { opacity: 1; visibility: visible; }
+
+  /* logo + mosaic — present on every slide as a brand frame */
+  .frame-logo {
+    position: absolute;
+    top: 56px;
+    left: 64px;
+    width: 320px;
+    height: auto;
+    z-index: 6;
+    pointer-events: none;
+  }
+  .frame-mosaic {
+    position: absolute;
+    top: 0;
+    right: 0;
+    height: 100%;
+    width: auto;
+    z-index: 1;
+    pointer-events: none;
+    opacity: .85;
+  }
+  /* on dense content slides we dim/clip the mosaic so content gets room */
+  .slide--content .frame-mosaic {
+    opacity: .18;
+    filter: grayscale(1);
+  }
+  /* slide footer + numbers */
+  .slide-foot {
+    position: absolute;
+    left: 64px;
+    bottom: 36px;
+    font-size: 18px;
+    letter-spacing: .14em;
+    text-transform: uppercase;
+    color: var(--mute);
+    z-index: 5;
+    font-weight: 600;
+  }
+  .slide-foot strong { color: var(--ink); }
+  .slide-num {
+    position: absolute;
+    right: 56px;
+    bottom: 36px;
+    font-size: 16px;
+    letter-spacing: .18em;
+    color: var(--mute);
+    font-weight: 600;
+    z-index: 5;
+  }
+
+  /* ============================================================
+     Type system
+     ============================================================ */
+  .eyebrow {
+    display: inline-block;
+    font-size: 18px;
+    font-weight: 700;
+    letter-spacing: .22em;
+    text-transform: uppercase;
+    padding: 6px 14px;
+    border: 2px solid var(--ink);
+    background: var(--paper);
+    margin-bottom: 36px;
+  }
+  .eyebrow--blue   { color: var(--paper); background: var(--blue);   border-color: var(--blue);   }
+  .eyebrow--green  { color: var(--ink);   background: var(--green);  border-color: var(--green);  }
+  .eyebrow--pink   { color: var(--paper); background: var(--pink);   border-color: var(--pink);   }
+  .eyebrow--yellow { color: var(--ink);   background: var(--yellow); border-color: var(--yellow); }
+  .eyebrow--orange { color: var(--paper); background: var(--orange); border-color: var(--orange); }
+
+  .h1 {
+    font-size: 96px;
+    font-weight: 900;
+    line-height: .98;
+    letter-spacing: -.025em;
+    color: var(--ink);
+  }
+  .h1 em { font-style: normal; color: var(--orange); }
+  .h2 {
+    font-size: 64px;
+    font-weight: 900;
+    line-height: 1.02;
+    letter-spacing: -.02em;
+    color: var(--ink);
+  }
+  .h2 em { font-style: normal; color: var(--orange); }
+  .h3 {
+    font-size: 36px;
+    font-weight: 800;
+    line-height: 1.1;
+    letter-spacing: -.01em;
+  }
+  .lede {
+    font-size: 28px;
+    line-height: 1.35;
+    font-weight: 500;
+    color: var(--ink);
+    max-width: 1100px;
+  }
+  .body {
+    font-size: 22px;
+    line-height: 1.45;
+    color: var(--ink);
+  }
+  .small {
+    font-size: 18px;
+    line-height: 1.45;
+    color: var(--mute);
+  }
+  .mono { font-family: "JetBrains Mono", "SF Mono", Menlo, monospace; }
+
+  .rule {
+    width: 96px;
+    height: 8px;
+    background: var(--ink);
+    margin: 24px 0;
+    border: 0;
+  }
+  .rule--orange { background: var(--orange); }
+  .rule--blue   { background: var(--blue); }
+  .rule--green  { background: var(--green); }
+  .rule--pink   { background: var(--pink); }
+
+  /* ============================================================
+     SLIDE 1 — TITLE
+     ============================================================ */
+  .slide--title {
+    background: var(--paper);
+  }
+  .slide--title .title-wrap {
+    position: absolute;
+    left: 64px;
+    bottom: 180px;
+    right: 1100px;
+    z-index: 5;
+  }
+  .slide--title .kicker {
+    font-size: 22px;
+    letter-spacing: .32em;
+    text-transform: uppercase;
+    color: var(--mute);
+    font-weight: 700;
+    margin-bottom: 32px;
+  }
+  .slide--title .title {
+    font-size: 132px;
+    font-weight: 900;
+    line-height: .92;
+    letter-spacing: -.035em;
+    color: var(--ink);
+  }
+  .slide--title .title .accent { color: var(--orange); }
+  .slide--title .subtitle {
+    margin-top: 36px;
+    font-size: 32px;
+    line-height: 1.25;
+    color: var(--ink);
+    font-weight: 500;
+    max-width: 880px;
+  }
+  .slide--title .meta {
+    position: absolute;
+    left: 64px;
+    bottom: 60px;
+    font-size: 18px;
+    letter-spacing: .14em;
+    text-transform: uppercase;
+    color: var(--mute);
+    font-weight: 600;
+    line-height: 1.6;
+  }
+  .slide--title .meta strong { color: var(--ink); }
+
+  /* ============================================================
+     Content layout helpers
+     ============================================================ */
+  .content {
+    position: absolute;
+    top: 200px;
+    left: 64px;
+    right: 64px;
+    bottom: 120px;
+    z-index: 4;
+    display: flex;
+    flex-direction: column;
+  }
+  .content--padright { right: 360px; }
+
+  .headline-block { margin-bottom: 28px; }
+  .headline-block .h2 { max-width: 1480px; }
+
+  /* network diagram */
+  .diagram-wrap {
+    position: relative;
+    flex: 1;
+    display: grid;
+    place-items: center;
+    margin-top: 12px;
+  }
+  .diagram-wrap svg.network { width: 100%; height: 100%; }
+
+  /* common diagram styles */
+  .net-node {
+    fill: var(--paper);
+    stroke: var(--ink);
+    stroke-width: 2.5;
+  }
+  .net-node--olist {
+    fill: var(--ink);
+  }
+  .net-label {
+    font-family: "Borna", "Inter", sans-serif;
+    font-weight: 800;
+    text-anchor: middle;
+    dominant-baseline: middle;
+    fill: var(--ink);
+  }
+  .net-label--white { fill: var(--paper); }
+  .net-edge {
+    stroke: var(--ink);
+    stroke-width: 2;
+    fill: none;
+    opacity: .55;
+  }
+  .net-edge--thick { stroke-width: 4; opacity: .85; }
+  .net-edge--dashed { stroke-dasharray: 6 8; opacity: .45; }
+
+  /* muted variant for slide 4 background */
+  .network--muted .net-node { stroke: #C9C9C9; }
+  .network--muted .net-node--olist { fill: #C9C9C9; }
+  .network--muted .net-edge { stroke: #C9C9C9; opacity: .5; }
+  .network--muted .net-label { fill: #B5B5B5; }
+  .network--muted .net-label--white { fill: #fff; }
+
+  /* highlight rings (slide 6) */
+  .hl-ring {
+    fill: none;
+    stroke-width: 6;
+  }
+  .hl-ring--demand    { stroke: var(--c-demand);    }
+  .hl-ring--sentiment { stroke: var(--c-sentiment); }
+  .hl-ring--network   { stroke: var(--c-network);   }
+  .hl-ring--archetype { stroke: var(--c-spark);     }
+
+  /* chips for annotations */
+  .net-chip {
+    font-family: "Borna", "Inter", sans-serif;
+    font-size: 17px;
+    fill: var(--ink);
+    font-weight: 600;
+  }
+  .net-chip--mute { fill: var(--mute); }
+
+  /* ============================================================
+     NEW "UMBRELLA + FLOW" DIAGRAM — used by slides 2, 3, 4, 6
+     ============================================================ */
+  .content--diagram {
+    top: 140px;
+    bottom: 80px;
+  }
+  .content--diagram .headline-block { margin-bottom: 14px; }
+  .content--diagram .h2 { font-size: 60px; line-height: 1.02; }
+  .content--diagram .lede { display: none; }
+  .diagram-caption {
+    font-size: 22px;
+    line-height: 1.35;
+    color: var(--mute);
+    margin-top: 18px;
+    font-weight: 500;
+    max-width: 1500px;
+  }
+  .diagram-caption strong { color: var(--ink); font-weight: 800; }
+
+  .diagram-2 {
+    width: 100%;
+    height: 100%;
+    display: block;
+    max-width: 100%;
+    max-height: 100%;
+    aspect-ratio: 1400 / 800;
+    object-fit: contain;
+  }
+  .content--diagram .diagram-wrap { min-height: 0; overflow: hidden; }
+
+  .df-band-olist { fill: var(--ink); }
+  .df-band-geo   { fill: var(--yellow); }
+
+  .df-card {
+    fill: var(--paper);
+    stroke: var(--ink);
+    stroke-width: 3;
+  }
+  .df-card--seller   { stroke: var(--blue); }
+  .df-card--customer { stroke: var(--pink); }
+
+  .df-rail {
+    fill: var(--paper);
+    stroke: var(--ink);
+    stroke-width: 3;
+  }
+  .df-rail--products { stroke: #0ab15b; }
+  .df-rail--orders   { fill: #FFFCE8; stroke: var(--ink); stroke-width: 4; }
+  .df-rail--reviews  { stroke: var(--orange); }
+
+  .df-title {
+    fill: var(--ink);
+    font-weight: 900;
+    font-family: "Borna", "Inter", sans-serif;
+  }
+  .df-title--white { fill: var(--paper); }
+  .df-sub {
+    fill: var(--mute);
+    font-family: "Borna", "Inter", sans-serif;
+    font-weight: 500;
+  }
+  .df-data {
+    fill: var(--ink);
+    font-family: "JetBrains Mono", "SF Mono", Menlo, monospace;
+  }
+  .df-pk {
+    fill: var(--orange);
+    font-weight: 900;
+    font-family: "JetBrains Mono", monospace;
+  }
+  .df-arrow-line {
+    stroke: var(--ink);
+    stroke-width: 4;
+    fill: none;
+  }
+  .df-arrow-line--dashed { stroke-dasharray: 8 6; }
+  .df-joinkey {
+    font-family: "JetBrains Mono", monospace;
+    fill: var(--mute);
+    font-weight: 700;
+  }
+  .df-badge { fill: var(--orange); }
+  .df-badge-text {
+    fill: var(--paper);
+    font-weight: 900;
+    font-family: "Borna", sans-serif;
+  }
+
+  /* slide 6 capability highlight rectangles */
+  .df-hl {
+    fill: none;
+    stroke-width: 6;
+  }
+  .df-hl--demand    { stroke: var(--c-demand);    }
+  .df-hl--sentiment { stroke: var(--c-sentiment); }
+  .df-hl--network   { stroke: #0ab15b; stroke-dasharray: 14 8; }
+  .df-hl--archetype { stroke: var(--c-spark);     }
+
+  /* slide 4 muted version — faded diagram backdrop */
+  .diagram-bg .df-band-olist,
+  .diagram-bg .df-band-geo,
+  .diagram-bg .df-card,
+  .diagram-bg .df-rail,
+  .diagram-bg .df-arrow-line { stroke: #BFBFBF; fill: #F0F0F0; }
+  .diagram-bg .df-band-olist { fill: #BFBFBF; }
+  .diagram-bg .df-band-geo   { fill: #ECEAD2; }
+
+  /* ============================================================
+     SLIDE 4 — 4 V's quadrant
+     ============================================================ */
+  .quad-grid {
+    flex: 1;
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    grid-template-rows: 1fr 1fr;
+    gap: 28px;
+    margin-top: 16px;
+    position: relative;
+    z-index: 3;
+  }
+  .quad {
+    padding: 32px 32px 28px;
+    background: var(--paper);
+    border: 3px solid var(--ink);
+    display: flex;
+    flex-direction: column;
+    gap: 12px;
+    position: relative;
+    box-shadow: 12px 12px 0 rgba(0,0,0,.04);
+  }
+  .quad .quad-title {
+    font-size: 38px;
+    font-weight: 900;
+    letter-spacing: -.01em;
+    line-height: 1;
+  }
+  .quad .quad-num {
+    font-size: 64px;
+    font-weight: 900;
+    line-height: 1;
+  }
+  .quad .quad-body { font-size: 19px; line-height: 1.45; color: var(--ink); max-width: 600px; }
+  .quad--blue   { border-color: var(--blue);   }
+  .quad--blue   .quad-title, .quad--blue .quad-num   { color: var(--blue);   }
+  .quad--green  { border-color: var(--green);  }
+  .quad--green  .quad-title, .quad--green .quad-num  { color: #0ab15b; }
+  .quad--pink   { border-color: var(--pink);   }
+  .quad--pink   .quad-title, .quad--pink .quad-num   { color: var(--pink);   }
+  .quad--yellow { border-color: var(--yellow); }
+  .quad--yellow .quad-title, .quad--yellow .quad-num { color: #b39e00; }
+
+  /* diagram faded behind the quadrants on slide 4 */
+  .slide--vs .diagram-bg {
+    position: absolute;
+    inset: 0;
+    z-index: 1;
+    opacity: .07;
+    display: grid;
+    place-items: center;
+    pointer-events: none;
+  }
+  .slide--vs .diagram-bg svg { width: 90%; height: 90%; }
+
+  /* ============================================================
+     SLIDE 5 — Why Spark fits (table)
+     ============================================================ */
+  .spark-table {
+    flex: 1;
+    margin-top: 12px;
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    border: 3px solid var(--ink);
+    background: var(--paper);
+    z-index: 3;
+    position: relative;
+  }
+  .spark-th {
+    padding: 22px 28px;
+    background: var(--ink);
+    color: var(--paper);
+    font-size: 22px;
+    font-weight: 800;
+    letter-spacing: .12em;
+    text-transform: uppercase;
+  }
+  .spark-th:nth-child(2) {
+    background: var(--orange);
+    color: var(--paper);
+  }
+  .spark-cell {
+    padding: 22px 28px;
+    border-top: 2px solid var(--ink);
+    font-size: 22px;
+    line-height: 1.35;
+  }
+  .spark-cell--demand { color: var(--ink); font-weight: 600; }
+  .spark-cell--spark { color: var(--ink); font-weight: 500; }
+  .spark-cell--spark strong { color: var(--orange); font-weight: 800; }
+
+  /* ============================================================
+     SLIDE 6 — Prototypes legend
+     ============================================================ */
+  .proto-legend {
+    position: absolute;
+    right: 64px;
+    top: 220px;
+    width: 460px;
+    display: flex;
+    flex-direction: column;
+    gap: 14px;
+    z-index: 5;
+  }
+  .proto-item {
+    border-left: 8px solid var(--ink);
+    padding: 14px 18px 14px 18px;
+    background: var(--paper);
+    box-shadow: 8px 8px 0 rgba(0,0,0,.05);
+  }
+  .proto-item .pi-title {
+    font-size: 22px;
+    font-weight: 900;
+    letter-spacing: -.005em;
+  }
+  .proto-item .pi-body {
+    font-size: 16px;
+    line-height: 1.4;
+    color: var(--mute);
+    margin-top: 4px;
+  }
+  .proto-item--demand    { border-color: var(--c-demand);    }
+  .proto-item--demand    .pi-title { color: var(--c-demand);    }
+  .proto-item--sentiment { border-color: var(--c-sentiment); }
+  .proto-item--sentiment .pi-title { color: var(--c-sentiment); }
+  .proto-item--network   { border-color: var(--c-network);   }
+  .proto-item--network   .pi-title { color: #0ab15b; }
+  .proto-item--archetype { border-color: var(--c-spark);     }
+  .proto-item--archetype .pi-title { color: var(--c-spark);     }
+
+  .proto-converge {
+    text-align: center;
+    font-size: 26px;
+    font-weight: 900;
+    color: var(--mute);
+    margin: 4px 0;
+    letter-spacing: .14em;
+  }
+  .proto-output {
+    background: var(--ink);
+    color: var(--paper);
+    padding: 16px 18px;
+    text-align: center;
+    border: 3px solid var(--orange);
+    box-shadow: 8px 8px 0 rgba(0,0,0,.06);
+  }
+  .proto-output .po-label {
+    font-size: 18px;
+    letter-spacing: .18em;
+    font-weight: 900;
+    color: var(--paper);
+  }
+  .proto-output .po-bands {
+    font-size: 13px;
+    letter-spacing: .12em;
+    color: var(--orange);
+    margin-top: 6px;
+    font-weight: 800;
+  }
+  .proto-output .po-sub {
+    font-size: 11px;
+    letter-spacing: .14em;
+    color: #BFBFBF;
+    margin-top: 4px;
+  }
+
+  /* slide-3 data table icon styles */
+  .tbl-card { fill: #FFFFFF; stroke-width: 2; }
+  .tbl-head { /* fill set inline per table */ }
+  .tbl-head-text { fill: #FFFFFF; font-weight: 900; font-family: "Borna", "Inter", sans-serif; }
+  .tbl-row { font-family: "JetBrains Mono", "SF Mono", monospace; font-size: 11px; fill: #0A0A0A; }
+  .tbl-row-pk { fill: var(--orange); font-weight: 900; }
+  .tbl-row-mute { fill: #6B6B6B; }
+  .join-line { stroke: var(--mute); stroke-width: 1.5; stroke-dasharray: 5 3; fill: none; opacity: .7; }
+  .join-key { font-family: "JetBrains Mono", monospace; font-size: 11px; font-weight: 800; fill: var(--ink); }
+
+  /* ============================================================
+     SLIDE 7 — Convergence
+     ============================================================ */
+  .flow-row {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 48px;
+    flex: 1;
+    margin-top: 16px;
+  }
+  .flow-col-left {
+    display: flex;
+    flex-direction: column;
+    gap: 14px;
+    justify-content: center;
+  }
+  .stream {
+    display: grid;
+    grid-template-columns: 80px 1fr 110px;
+    align-items: center;
+    border: 3px solid var(--ink);
+    background: var(--paper);
+    height: 78px;
+    overflow: hidden;
+  }
+  .stream .stream-dot {
+    width: 100%; height: 100%;
+    display: grid; place-items: center;
+    color: var(--paper);
+    font-weight: 900;
+    font-size: 30px;
+  }
+  .stream .stream-name {
+    padding: 0 20px;
+    font-size: 24px;
+    font-weight: 800;
+  }
+  .stream .stream-w {
+    text-align: center;
+    background: var(--paper-2);
+    height: 100%;
+    display: grid; place-items: center;
+    font-size: 22px;
+    font-weight: 800;
+    border-left: 3px solid var(--ink);
+  }
+  .stream--demand    .stream-dot { background: var(--c-demand);    }
+  .stream--sentiment .stream-dot { background: var(--c-sentiment); }
+  .stream--network   .stream-dot { background: var(--c-network); color: var(--ink); }
+
+  .flow-arrow {
+    text-align: center;
+    margin: 8px 0 8px;
+    font-size: 32px;
+    font-weight: 900;
+    color: var(--mute);
+  }
+  .composite {
+    border: 3px solid var(--orange);
+    background: var(--paper);
+    padding: 18px 22px;
+    display: grid;
+    grid-template-columns: 1fr auto;
+    gap: 16px;
+    align-items: center;
+  }
+  .composite .c-label {
+    font-size: 22px;
+    font-weight: 800;
+    color: var(--orange);
+    letter-spacing: -.01em;
+  }
+  .composite .c-eq {
+    font-size: 17px;
+    color: var(--mute);
+    font-weight: 600;
+  }
+  .composite .c-formula {
+    font-size: 18px;
+    font-weight: 800;
+    background: var(--orange);
+    color: var(--paper);
+    padding: 8px 14px;
+    letter-spacing: -.01em;
+    white-space: nowrap;
+  }
+
+  /* watchlist mockup (right column) */
+  .watchlist {
+    background: var(--paper);
+    border: 3px solid var(--ink);
+    overflow: hidden;
+    display: flex;
+    flex-direction: column;
+  }
+  .wl-head {
+    background: var(--ink);
+    color: var(--paper);
+    padding: 14px 22px;
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+  }
+  .wl-title {
+    font-size: 20px;
+    font-weight: 800;
+    letter-spacing: .04em;
+  }
+  .wl-stamp {
+    font-size: 13px;
+    letter-spacing: .18em;
+    text-transform: uppercase;
+    color: #B0B0B0;
+  }
+  .wl-bands {
+    display: grid;
+    grid-template-columns: 1fr 1fr 1fr;
+    border-bottom: 2px solid var(--ink);
+  }
+  .wl-band {
+    padding: 14px 16px;
+    text-align: center;
+    border-right: 2px solid var(--ink);
+  }
+  .wl-band:last-child { border-right: 0; }
+  .wl-band .b-num { font-size: 38px; font-weight: 900; line-height: 1; }
+  .wl-band .b-label { font-size: 13px; letter-spacing: .18em; text-transform: uppercase; color: var(--mute); margin-top: 4px; font-weight: 700; }
+  .wl-band--safe .b-num { color: #0ab15b; }
+  .wl-band--warn .b-num { color: #b39e00; }
+  .wl-band--crit .b-num { color: var(--orange); }
+
+  .wl-table {
+    width: 100%;
+    border-collapse: collapse;
+    font-size: 15.5px;
+  }
+  .wl-table th {
+    text-align: left;
+    padding: 10px 14px;
+    background: var(--paper-2);
+    border-bottom: 2px solid var(--ink);
+    font-size: 12px;
+    text-transform: uppercase;
+    letter-spacing: .12em;
+    color: var(--mute);
+  }
+  .wl-table td {
+    padding: 10px 14px;
+    border-bottom: 1px solid #ECECEC;
+  }
+  .wl-table tr:last-child td { border-bottom: 0; }
+  .wl-pill {
+    display: inline-block;
+    padding: 2px 10px;
+    font-size: 12px;
+    font-weight: 800;
+    letter-spacing: .12em;
+    text-transform: uppercase;
+    border-radius: 999px;
+  }
+  .wl-pill--crit { background: var(--orange); color: var(--paper); }
+  .wl-pill--warn { background: var(--yellow); color: var(--ink); }
+  .wl-pill--safe { background: var(--green);  color: var(--ink); }
+
+  /* ============================================================
+     SLIDE 8 — Insights
+     ============================================================ */
+  .insights {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 36px;
+    flex: 1;
+    margin-top: 14px;
+  }
+  .insight {
+    background: var(--paper);
+    border: 3px solid var(--ink);
+    padding: 26px 28px;
+    display: flex;
+    flex-direction: column;
+    gap: 16px;
+    position: relative;
+  }
+  .insight .i-eyebrow {
+    font-size: 14px;
+    letter-spacing: .22em;
+    text-transform: uppercase;
+    font-weight: 800;
+    color: var(--mute);
+  }
+  .insight .i-title {
+    font-size: 32px;
+    font-weight: 900;
+    line-height: 1.05;
+    letter-spacing: -.015em;
+  }
+  .insight .i-body {
+    font-size: 18px;
+    line-height: 1.4;
+  }
+  .insight .i-fig {
+    flex: 1;
+    background: var(--paper-2);
+    border: 2px solid #E2E2E2;
+    display: grid;
+    place-items: center;
+    overflow: hidden;
+  }
+  .insight .i-fig img { max-width: 100%; max-height: 100%; display: block; }
+  .insight--a { border-color: var(--blue);  }
+  .insight--a .i-title { color: var(--blue);  }
+  .insight--b { border-color: var(--green); }
+  .insight--b .i-title { color: #0ab15b; }
+
+  /* hubshift mini diagram */
+  .hubshift {
+    display: grid;
+    grid-template-columns: 1fr auto 1fr;
+    gap: 20px;
+    align-items: stretch;
+    flex: 1;
+  }
+  .hubshift .hs-state {
+    border: 2px solid #E2E2E2;
+    background: var(--paper);
+    padding: 16px 14px;
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+  }
+  .hubshift .hs-label {
+    font-size: 12px;
+    letter-spacing: .18em;
+    text-transform: uppercase;
+    color: var(--mute);
+    font-weight: 800;
+  }
+  .hubshift .hs-arrow {
+    display: grid; place-items: center;
+    font-size: 38px;
+    font-weight: 900;
+    color: var(--green);
+  }
+  .hubshift .hs-row {
+    display: grid;
+    grid-template-columns: 28px 1fr 50px;
+    gap: 8px;
+    align-items: center;
+    font-size: 14px;
+    padding: 4px 0;
+  }
+  .hubshift .hs-rank { font-weight: 900; color: var(--mute); }
+  .hubshift .hs-id { font-family: "JetBrains Mono", monospace; font-size: 13px; }
+  .hubshift .hs-bar {
+    height: 10px; background: var(--paper-2); position: relative; overflow: hidden;
+  }
+  .hubshift .hs-bar > span {
+    position: absolute; left: 0; top: 0; bottom: 0;
+    background: var(--blue);
+  }
+  .hubshift--after .hs-bar > span { background: var(--green); }
+  .hubshift .hs-pr { font-size: 13px; font-weight: 800; text-align: right; }
+  .hs-row--new { background: rgba(14, 224, 113, .14); }
+  .hs-row--gone { opacity: .35; text-decoration: line-through; }
+
+  /* ============================================================
+     SLIDE 9 — What Olist gains
+     ============================================================ */
+  .gains {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 28px;
+    flex: 1;
+    margin-top: 16px;
+  }
+  .gain {
+    background: var(--paper);
+    border: 3px solid var(--ink);
+    padding: 28px 32px;
+    display: flex;
+    flex-direction: column;
+    gap: 12px;
+    position: relative;
+    box-shadow: 12px 12px 0 rgba(0,0,0,.04);
+  }
+  .gain .g-num {
+    font-size: 28px;
+    font-weight: 900;
+    color: var(--mute);
+    letter-spacing: -.01em;
+  }
+  .gain .g-from-to {
+    font-size: 24px;
+    font-weight: 800;
+    line-height: 1.15;
+    color: var(--mute);
+  }
+  .gain .g-from-to .from { text-decoration: line-through; color: var(--mute); }
+  .gain .g-from-to .to   { color: var(--ink); }
+  .gain .g-title {
+    font-size: 36px;
+    font-weight: 900;
+    line-height: 1;
+    letter-spacing: -.015em;
+  }
+  .gain .g-body {
+    font-size: 19px;
+    line-height: 1.4;
+    color: var(--ink);
+  }
+  .gain--a { border-color: var(--orange); }
+  .gain--a .g-title { color: var(--orange); }
+  .gain--b { border-color: var(--blue); }
+  .gain--b .g-title { color: var(--blue); }
+  .gain--c { border-color: var(--green); }
+  .gain--c .g-title { color: #0ab15b; }
+  .gain--d { border-color: var(--pink); }
+  .gain--d .g-title { color: var(--pink); }
+
+  /* ============================================================
+     SLIDE 10 — Close
+     ============================================================ */
+  .close-list {
+    flex: 1;
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 36px;
+    margin-top: 14px;
+  }
+  .close-col h4 {
+    font-size: 18px;
+    letter-spacing: .22em;
+    text-transform: uppercase;
+    font-weight: 800;
+    margin-bottom: 16px;
+    padding-bottom: 10px;
+    border-bottom: 3px solid var(--ink);
+  }
+  .close-col ul { list-style: none; }
+  .close-col li {
+    font-size: 22px;
+    line-height: 1.45;
+    padding: 8px 0;
+    border-bottom: 1px dashed #DDD;
+    display: grid;
+    grid-template-columns: 32px 1fr;
+    gap: 8px;
+  }
+  .close-col li b { color: var(--orange); font-weight: 900; }
+  .close-stamp {
+    margin-top: 24px;
+    padding: 20px 26px;
+    background: var(--ink);
+    color: var(--paper);
+    font-weight: 800;
+    font-size: 26px;
+    letter-spacing: -.005em;
+    display: flex;
+    align-items: center;
+    gap: 18px;
+  }
+  .close-stamp .arrow {
+    color: var(--orange);
+    font-size: 30px;
+  }
+
+  /* ============================================================
+     Navigation chrome (overlay)
+     ============================================================ */
+  .pager {
+    position: fixed;
+    bottom: 12px;
+    left: 50%;
+    transform: translateX(-50%);
+    display: flex;
+    gap: 8px;
+    z-index: 100;
+    background: rgba(0,0,0,.55);
+    padding: 8px 12px;
+    border-radius: 999px;
+    backdrop-filter: blur(6px);
+    opacity: .35;
+    transition: opacity .2s ease;
+  }
+  .pager:hover { opacity: 1; }
+  .dot {
+    width: 9px; height: 9px;
+    border-radius: 50%;
+    background: rgba(255,255,255,.35);
+    border: 0;
+    cursor: pointer;
+    padding: 0;
+    transition: background .15s ease, transform .15s ease;
+  }
+  .dot:hover { background: rgba(255,255,255,.7); }
+  .dot.active { background: var(--orange); transform: scale(1.25); }
+
+  .nav-edge {
+    position: fixed;
+    top: 0; bottom: 0;
+    width: 18%;
+    cursor: pointer;
+    z-index: 90;
+  }
+  .nav-edge--prev { left: 0; }
+  .nav-edge--next { right: 0; }
+  .help-hint {
+    position: fixed;
+    top: 14px;
+    right: 18px;
+    color: rgba(255,255,255,.55);
+    font-size: 12px;
+    letter-spacing: .14em;
+    text-transform: uppercase;
+    z-index: 100;
+    pointer-events: none;
+  }
+</style>
+</head>
+<body>
+<div class="stage" id="stage">
+
+  <!-- ============================================================
+       SLIDE 1 — TITLE
+       ============================================================ -->
+  <section class="slide slide--title" data-slide="1">
+    <img class="frame-logo" src="assets/novaims-logo.png" alt="NOVA IMS" />
+    <img class="frame-mosaic" src="assets/novaims-mosaic.png" alt="" />
+    <div class="title-wrap">
+      <div class="kicker">BigDataCompany · Consulting update for Olist</div>
+      <h1 class="title">Olist<br/>Supply-Chain<br/><span class="accent">Risk Intelligence.</span></h1>
+      <p class="subtitle">A <strong>network view</strong> of Olist's marketplace risk — built on PySpark, delivered as a weekly seller watchlist.</p>
+    </div>
+    <div class="meta">
+      <strong>Big Data Analysis · Group Project · 2025/26</strong><br/>
+      NOVA IMS · Lukas Belser et&nbsp;al. · Submission 5&nbsp;Jun&nbsp;2026
+    </div>
+    <div class="slide-num">01 / 10</div>
+  </section>
+
+  <!-- ============================================================
+       SLIDE 2 — THE OLIST ECOSYSTEM (anchor diagram)
+       ============================================================ -->
+  <section class="slide slide--content" data-slide="2">
+    <img class="frame-logo" src="assets/novaims-logo.png" alt="NOVA IMS" />
+    <img class="frame-mosaic" src="assets/novaims-mosaic.png" alt="" />
+    <div class="content content--diagram">
+      <div class="headline-block">
+        <span class="eyebrow eyebrow--orange">The consulting question</span>
+        <h2 class="h2">Which sellers should Olist <em>intervene on this week</em> — before customers do?</h2>
+        <p class="diagram-caption">A few sellers carry most of the marketplace volume. When a <strong>hub seller fails silently</strong>, the impact ripples through customers — before Olist sees it.</p>
+      </div>
+      <div class="diagram-wrap">
+        <!-- ANCHOR DIAGRAM — three columns: sellers · products · customer base + review bubble -->
+        <svg class="diagram-2" viewBox="0 0 1400 800" preserveAspectRatio="xMidYMid meet" aria-label="Olist ecosystem network diagram">
+          <defs>
+            <marker id="sup-arr" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto">
+              <path d="M0,0 L10,5 L0,10 z" fill="#0ab15b"/>
+            </marker>
+            <marker id="dem-arr" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto">
+              <path d="M0,0 L10,5 L0,10 z" fill="#3777FF"/>
+            </marker>
+          </defs>
+
+          <!-- OLIST umbrella banner -->
+          <rect class="df-band-olist" x="0" y="20" width="1400" height="70"/>
+          <text class="df-title df-title--white" x="700" y="66" text-anchor="middle" font-size="26" letter-spacing=".22em">OLIST · THE MARKETPLACE PLATFORM</text>
+
+          <!-- Column headers -->
+          <text x="150" y="130" text-anchor="middle" font-size="15" letter-spacing=".22em" fill="#6B6B6B" font-weight="800">SELLERS · ~3,000</text>
+          <text x="660" y="130" text-anchor="middle" font-size="15" letter-spacing=".22em" fill="#6B6B6B" font-weight="800">PRODUCTS · ~33,000</text>
+          <text x="1170" y="130" text-anchor="middle" font-size="15" letter-spacing=".22em" fill="#6B6B6B" font-weight="800">CUSTOMER BASE · ~96,000</text>
+
+          <!-- ============ DEMAND LINES (drawn first so supply lines overlay) ============ -->
+          <g stroke="#3777FF" stroke-width="2.2" stroke-dasharray="8 5" fill="none" opacity=".85">
+            <path d="M990,250 Q900,235 760,220" marker-end="url(#dem-arr)"/>
+            <path d="M990,290 Q900,300 760,305" marker-end="url(#dem-arr)"/>
+            <path d="M990,330 Q900,360 760,390" marker-end="url(#dem-arr)"/>
+            <path d="M990,370 Q900,425 760,475" marker-end="url(#dem-arr)"/>
+            <path d="M990,410 Q900,490 760,560" marker-end="url(#dem-arr)"/>
+          </g>
+
+          <!-- ============ SUPPLY LINES — solid green, seller → product → customer ============ -->
+          <g stroke="#0ab15b" stroke-width="3" fill="none">
+            <!-- Seller A → Product 1 → Customer base -->
+            <path d="M250,230 L560,220"/>
+            <path d="M760,220 L990,260" marker-end="url(#sup-arr)"/>
+            <!-- Seller B → Product 2 -->
+            <path d="M270,360 L560,305"/>
+            <path d="M760,305 L990,295" marker-end="url(#sup-arr)"/>
+            <!-- Seller B → Product 3 -->
+            <path d="M270,400 L560,390"/>
+            <path d="M760,390 L990,330" marker-end="url(#sup-arr)"/>
+            <!-- Seller B → Product 4 -->
+            <path d="M270,440 L560,475"/>
+            <path d="M760,475 L990,365" marker-end="url(#sup-arr)"/>
+            <!-- Seller C → Product 5 -->
+            <path d="M250,570 L560,560"/>
+            <path d="M760,560 L990,400" marker-end="url(#sup-arr)"/>
+          </g>
+
+          <!-- ============ SELLERS column ============ -->
+          <!-- Seller A -->
+          <g>
+            <rect x="50" y="180" width="200" height="100" fill="#FFFFFF" stroke="#0A0A0A" stroke-width="2.5"/>
+            <text x="150" y="220" text-anchor="middle" font-size="22" font-weight="900">Seller A</text>
+            <text x="150" y="250" text-anchor="middle" font-size="13" fill="#6B6B6B">1 product</text>
+          </g>
+
+          <!-- Seller B — the HUB (bigger, orange-outlined) -->
+          <g>
+            <rect x="30" y="320" width="240" height="160" fill="#FFF5F2" stroke="#FF4011" stroke-width="4"/>
+            <text x="150" y="370" text-anchor="middle" font-size="30" font-weight="900">Seller B</text>
+            <rect x="60" y="386" width="180" height="26" fill="#FF4011"/>
+            <text x="150" y="405" text-anchor="middle" font-size="14" font-weight="900" fill="#FFFFFF" letter-spacing=".18em">HUB SELLER</text>
+            <text x="150" y="436" text-anchor="middle" font-size="14" fill="#0A0A0A" font-weight="700">3 products</text>
+            <text x="150" y="458" text-anchor="middle" font-size="12" fill="#6B6B6B" font-style="italic">central in the supply network</text>
+          </g>
+
+          <!-- Seller C -->
+          <g>
+            <rect x="50" y="520" width="200" height="100" fill="#FFFFFF" stroke="#0A0A0A" stroke-width="2.5"/>
+            <text x="150" y="560" text-anchor="middle" font-size="22" font-weight="900">Seller C</text>
+            <text x="150" y="590" text-anchor="middle" font-size="13" fill="#6B6B6B">1 product</text>
+          </g>
+
+          <!-- ============ PRODUCTS column ============ -->
+          <g>
+            <rect x="560" y="185" width="200" height="70" fill="#FFFFFF" stroke="#0ab15b" stroke-width="2.5"/>
+            <text x="660" y="227" text-anchor="middle" font-size="18" font-weight="800" fill="#0A0A0A">Product 1</text>
+          </g>
+          <g>
+            <rect x="560" y="270" width="200" height="70" fill="#FFFFFF" stroke="#0ab15b" stroke-width="2.5"/>
+            <text x="660" y="312" text-anchor="middle" font-size="18" font-weight="800" fill="#0A0A0A">Product 2</text>
+          </g>
+          <g>
+            <rect x="560" y="355" width="200" height="70" fill="#FFFFFF" stroke="#0ab15b" stroke-width="2.5"/>
+            <text x="660" y="397" text-anchor="middle" font-size="18" font-weight="800" fill="#0A0A0A">Product 3</text>
+          </g>
+          <g>
+            <rect x="560" y="440" width="200" height="70" fill="#FFFFFF" stroke="#0ab15b" stroke-width="2.5"/>
+            <text x="660" y="482" text-anchor="middle" font-size="18" font-weight="800" fill="#0A0A0A">Product 4</text>
+          </g>
+          <g>
+            <rect x="560" y="525" width="200" height="70" fill="#FFFFFF" stroke="#0ab15b" stroke-width="2.5"/>
+            <text x="660" y="567" text-anchor="middle" font-size="18" font-weight="800" fill="#0A0A0A">Product 5</text>
+          </g>
+
+          <!-- ============ CUSTOMER BASE box (right) ============ -->
+          <g>
+            <rect x="990" y="190" width="350" height="280" fill="#FFFFFF" stroke="#FF009C" stroke-width="3"/>
+            <text x="1165" y="240" text-anchor="middle" font-size="26" font-weight="900">Customer base</text>
+            <text x="1165" y="268" text-anchor="middle" font-size="16" fill="#FF009C" font-weight="800">~96,000 Brazilian buyers</text>
+            <!-- Crowd: small dots representing many customers -->
+            <g fill="#FF009C" opacity=".55">
+              <circle cx="1040" cy="320" r="5"/><circle cx="1075" cy="320" r="5"/><circle cx="1110" cy="320" r="5"/><circle cx="1145" cy="320" r="5"/><circle cx="1180" cy="320" r="5"/><circle cx="1215" cy="320" r="5"/><circle cx="1250" cy="320" r="5"/><circle cx="1285" cy="320" r="5"/>
+              <circle cx="1057" cy="350" r="5"/><circle cx="1092" cy="350" r="5"/><circle cx="1127" cy="350" r="5"/><circle cx="1162" cy="350" r="5"/><circle cx="1197" cy="350" r="5"/><circle cx="1232" cy="350" r="5"/><circle cx="1267" cy="350" r="5"/><circle cx="1302" cy="350" r="5"/>
+              <circle cx="1040" cy="380" r="5"/><circle cx="1075" cy="380" r="5"/><circle cx="1110" cy="380" r="5"/><circle cx="1145" cy="380" r="5"/><circle cx="1180" cy="380" r="5"/><circle cx="1215" cy="380" r="5"/><circle cx="1250" cy="380" r="5"/><circle cx="1285" cy="380" r="5"/>
+              <circle cx="1057" cy="410" r="5"/><circle cx="1092" cy="410" r="5"/><circle cx="1127" cy="410" r="5"/><circle cx="1162" cy="410" r="5"/><circle cx="1197" cy="410" r="5"/><circle cx="1232" cy="410" r="5"/><circle cx="1267" cy="410" r="5"/><circle cx="1302" cy="410" r="5"/>
+              <circle cx="1040" cy="440" r="5"/><circle cx="1075" cy="440" r="5"/><circle cx="1110" cy="440" r="5"/><circle cx="1145" cy="440" r="5"/><circle cx="1180" cy="440" r="5"/><circle cx="1215" cy="440" r="5"/><circle cx="1250" cy="440" r="5"/><circle cx="1285" cy="440" r="5"/>
+            </g>
+          </g>
+
+          <!-- ============ REVIEW SPEECH BUBBLE (attached to customer base) ============ -->
+          <g>
+            <!-- Bubble body + pointing tail -->
+            <path d="M990 530
+                     Q990 515 1005 515
+                     L1325 515
+                     Q1340 515 1340 530
+                     L1340 660
+                     Q1340 675 1325 675
+                     L1100 675
+                     L1075 700
+                     L1090 675
+                     L1005 675
+                     Q990 675 990 660 Z"
+                  fill="#FFE5F2" stroke="#FF009C" stroke-width="3"/>
+            <text x="1165" y="555" text-anchor="middle" font-size="14" font-weight="800" fill="#FF009C" letter-spacing=".18em">SAMPLE REVIEW</text>
+            <text x="1165" y="590" text-anchor="middle" font-size="20" font-style="italic" fill="#0A0A0A">"Arrived late, damaged."</text>
+            <text x="1165" y="630" text-anchor="middle" font-size="26" font-weight="900" fill="#FF009C">★ ★ ☆ ☆ ☆</text>
+            <text x="1165" y="660" text-anchor="middle" font-size="13" fill="#6B6B6B">customers can rate every order — in Portuguese</text>
+          </g>
+
+          <!-- ============ LEGEND (bottom) ============ -->
+          <g transform="translate(40, 720)">
+            <line x1="0" y1="14" x2="60" y2="14" stroke="#0ab15b" stroke-width="3" marker-end="url(#sup-arr)"/>
+            <text x="76" y="19" font-size="14" font-weight="700" fill="#0A0A0A">SUPPLY · sellers → products → customers</text>
+
+            <line x1="540" y1="14" x2="600" y2="14" stroke="#3777FF" stroke-width="2.2" stroke-dasharray="8 5" marker-end="url(#dem-arr)"/>
+            <text x="616" y="19" font-size="14" font-weight="700" fill="#0A0A0A">DEMAND · customers pull from products</text>
+
+            <rect x="1020" y="6" width="20" height="16" fill="#FFE5F2" stroke="#FF009C" stroke-width="2"/>
+            <text x="1050" y="19" font-size="14" font-weight="700" fill="#0A0A0A">CUSTOMER REVIEW (rating + Portuguese free-text)</text>
+          </g>
+        </svg>
+      </div>
+    </div>
+    <div class="slide-foot">Olist Supply-Chain Risk · <strong>The business problem</strong></div>
+    <div class="slide-num">02 / 10</div>
+  </section>
+
+  <!-- ============================================================
+       SLIDE 3 — WHERE THE DATA LIVES (annotated)
+       ============================================================ -->
+  <section class="slide slide--content" data-slide="3">
+    <img class="frame-logo" src="assets/novaims-logo.png" alt="NOVA IMS" />
+    <img class="frame-mosaic" src="assets/novaims-mosaic.png" alt="" />
+    <div class="content content--diagram">
+      <div class="headline-block">
+        <span class="eyebrow eyebrow--blue">Where the data lives</span>
+        <h2 class="h2">Every relationship <em>generates data.</em></h2>
+        <p class="lede" style="margin-top:18px;">9 interconnected tables — and the value is in the <strong>joins</strong>, not any single one.</p>
+      </div>
+      <div class="diagram-wrap">
+        <svg class="diagram-2" viewBox="0 0 1400 800" preserveAspectRatio="xMidYMid meet">
+          <defs>
+            <marker id="sup-arr-d" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto">
+              <path d="M0,0 L10,5 L0,10 z" fill="#0ab15b"/>
+            </marker>
+            <marker id="dem-arr-d" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto">
+              <path d="M0,0 L10,5 L0,10 z" fill="#3777FF"/>
+            </marker>
+          </defs>
+
+          <!-- ============ ANCHOR DIAGRAM (faded, ~25% opacity) ============ -->
+          <g opacity="0.22">
+            <rect fill="#0A0A0A" x="0" y="20" width="1400" height="70"/>
+            <text fill="#FFFFFF" font-weight="900" x="700" y="66" text-anchor="middle" font-size="26" letter-spacing=".22em" font-family="Borna,Inter,sans-serif">OLIST · THE MARKETPLACE PLATFORM</text>
+
+            <text x="150" y="130" text-anchor="middle" font-size="15" letter-spacing=".22em" fill="#6B6B6B" font-weight="800">SELLERS</text>
+            <text x="660" y="130" text-anchor="middle" font-size="15" letter-spacing=".22em" fill="#6B6B6B" font-weight="800">PRODUCTS</text>
+            <text x="1170" y="130" text-anchor="middle" font-size="15" letter-spacing=".22em" fill="#6B6B6B" font-weight="800">CUSTOMER BASE</text>
+
+            <g stroke="#3777FF" stroke-width="2" stroke-dasharray="8 5" fill="none">
+              <path d="M990,250 Q900,235 760,220"/>
+              <path d="M990,290 Q900,300 760,305"/>
+              <path d="M990,330 Q900,360 760,390"/>
+              <path d="M990,370 Q900,425 760,475"/>
+              <path d="M990,410 Q900,490 760,560"/>
+            </g>
+            <g stroke="#0ab15b" stroke-width="2.5" fill="none">
+              <path d="M250,230 L560,220"/><path d="M760,220 L990,260"/>
+              <path d="M270,360 L560,305"/><path d="M760,305 L990,295"/>
+              <path d="M270,400 L560,390"/><path d="M760,390 L990,330"/>
+              <path d="M270,440 L560,475"/><path d="M760,475 L990,365"/>
+              <path d="M250,570 L560,560"/><path d="M760,560 L990,400"/>
+            </g>
+            <rect x="50" y="180" width="200" height="100" fill="#FFFFFF" stroke="#0A0A0A" stroke-width="2"/>
+            <text x="150" y="220" text-anchor="middle" font-size="20" font-weight="900">Seller A</text>
+            <rect x="30" y="320" width="240" height="160" fill="#FFF5F2" stroke="#FF4011" stroke-width="3"/>
+            <text x="150" y="370" text-anchor="middle" font-size="28" font-weight="900">Seller B</text>
+            <rect x="60" y="386" width="180" height="26" fill="#FF4011"/>
+            <text x="150" y="405" text-anchor="middle" font-size="13" font-weight="900" fill="#FFFFFF" letter-spacing=".18em">HUB SELLER</text>
+            <rect x="50" y="520" width="200" height="100" fill="#FFFFFF" stroke="#0A0A0A" stroke-width="2"/>
+            <text x="150" y="560" text-anchor="middle" font-size="20" font-weight="900">Seller C</text>
+            <rect x="560" y="185" width="200" height="70" fill="#FFFFFF" stroke="#0ab15b" stroke-width="2"/>
+            <text x="660" y="227" text-anchor="middle" font-size="16" font-weight="800">Product 1</text>
+            <rect x="560" y="270" width="200" height="70" fill="#FFFFFF" stroke="#0ab15b" stroke-width="2"/>
+            <text x="660" y="312" text-anchor="middle" font-size="16" font-weight="800">Product 2</text>
+            <rect x="560" y="355" width="200" height="70" fill="#FFFFFF" stroke="#0ab15b" stroke-width="2"/>
+            <text x="660" y="397" text-anchor="middle" font-size="16" font-weight="800">Product 3</text>
+            <rect x="560" y="440" width="200" height="70" fill="#FFFFFF" stroke="#0ab15b" stroke-width="2"/>
+            <text x="660" y="482" text-anchor="middle" font-size="16" font-weight="800">Product 4</text>
+            <rect x="560" y="525" width="200" height="70" fill="#FFFFFF" stroke="#0ab15b" stroke-width="2"/>
+            <text x="660" y="567" text-anchor="middle" font-size="16" font-weight="800">Product 5</text>
+            <rect x="990" y="190" width="350" height="280" fill="#FFFFFF" stroke="#FF009C" stroke-width="2.5"/>
+            <text x="1165" y="240" text-anchor="middle" font-size="22" font-weight="900">Customer base</text>
+            <path d="M990 530 Q990 515 1005 515 L1325 515 Q1340 515 1340 530 L1340 660 Q1340 675 1325 675 L1100 675 L1075 700 L1090 675 L1005 675 Q990 675 990 660 Z" fill="#FFE5F2" stroke="#FF009C" stroke-width="2.5"/>
+            <text x="1165" y="595" text-anchor="middle" font-size="18" font-style="italic" fill="#0A0A0A">"Arrived late, damaged."</text>
+            <text x="1165" y="630" text-anchor="middle" font-size="22" font-weight="900" fill="#FF009C">★ ★ ☆ ☆ ☆</text>
+          </g>
+
+          <!-- ============ "9 TABLES" badge ============ -->
+          <rect class="df-badge" x="1250" y="20" width="130" height="70"/>
+          <text class="df-badge-text" x="1315" y="50" text-anchor="middle" font-size="28">9</text>
+          <text class="df-badge-text" x="1315" y="73" text-anchor="middle" font-size="12" letter-spacing=".22em">TABLES</text>
+
+          <!-- ============ JOIN LINES (under icons) ============ -->
+          <g>
+            <!-- sellers → order_items (via seller_id) -->
+            <path class="join-line" d="M205,290 C300,330 400,370 540,415"/>
+            <text class="join-key" x="345" y="365">seller_id</text>
+            <!-- sellers → geolocation (zip) -->
+            <path class="join-line" d="M105,290 L105,540"/>
+            <text class="join-key" x="115" y="430" transform="rotate(-90 115 430)">zip_prefix</text>
+            <!-- products → order_items (product_id) -->
+            <path class="join-line" d="M660,300 L660,400"/>
+            <text class="join-key" x="670" y="350">product_id</text>
+            <!-- orders → customers (customer_id) -->
+            <path class="join-line" d="M780,420 C900,400 1000,300 1180,230"/>
+            <text class="join-key" x="990" y="335">customer_id</text>
+            <!-- orders → order_reviews (order_id) -->
+            <path class="join-line" d="M780,470 C880,510 1050,560 1180,570"/>
+            <text class="join-key" x="970" y="555">order_id</text>
+            <!-- customers → geolocation (zip) -->
+            <path class="join-line" d="M1280,290 C1100,470 600,650 215,665"/>
+            <text class="join-key" x="700" y="685">zip_code_prefix</text>
+          </g>
+
+          <!-- ============ TABLE ICONS (full opacity, on top) ============ -->
+
+          <!-- 1. sellers -->
+          <g>
+            <rect class="tbl-card" x="10" y="170" width="200" height="120" stroke="#3777FF"/>
+            <rect x="10" y="170" width="200" height="22" fill="#3777FF"/>
+            <text class="tbl-head-text" x="110" y="186" text-anchor="middle" font-size="12" letter-spacing=".14em">sellers · 3,095</text>
+            <text class="tbl-row tbl-row-pk" x="20" y="215">seller_id (PK)</text>
+            <text class="tbl-row" x="20" y="237">seller_state</text>
+            <text class="tbl-row" x="20" y="257">seller_zip_code_prefix</text>
+            <text class="tbl-row tbl-row-mute" x="20" y="278">category</text>
+          </g>
+
+          <!-- 2. geolocation -->
+          <g>
+            <rect class="tbl-card" x="10" y="540" width="200" height="130" stroke="#F6DA00"/>
+            <rect x="10" y="540" width="200" height="22" fill="#F6DA00"/>
+            <text class="tbl-head-text" x="110" y="556" text-anchor="middle" font-size="12" letter-spacing=".14em" fill="#0A0A0A">geolocation · 1M → 19k</text>
+            <text class="tbl-row tbl-row-pk" x="20" y="585">zip_code_prefix</text>
+            <text class="tbl-row" x="20" y="605">geolocation_lat</text>
+            <text class="tbl-row" x="20" y="625">geolocation_lng</text>
+            <text class="tbl-row tbl-row-mute" x="20" y="650">→ broadcast centroid</text>
+          </g>
+
+          <!-- 3. products -->
+          <g>
+            <rect class="tbl-card" x="540" y="160" width="240" height="120" stroke="#0ab15b"/>
+            <rect x="540" y="160" width="240" height="22" fill="#0ab15b"/>
+            <text class="tbl-head-text" x="660" y="176" text-anchor="middle" font-size="12" letter-spacing=".14em">products · 32,951</text>
+            <text class="tbl-row tbl-row-pk" x="550" y="205">product_id (PK)</text>
+            <text class="tbl-row" x="550" y="225">product_category_name</text>
+            <text class="tbl-row" x="550" y="245">product_weight_g</text>
+            <text class="tbl-row tbl-row-mute" x="550" y="266">+ length, height, width</text>
+          </g>
+
+          <!-- 4. category_translation -->
+          <g>
+            <rect class="tbl-card" x="540" y="290" width="240" height="48" stroke="#0ab15b"/>
+            <rect x="540" y="290" width="240" height="20" fill="#0ab15b"/>
+            <text class="tbl-head-text" x="660" y="305" text-anchor="middle" font-size="11" letter-spacing=".14em">category_translation · 71</text>
+            <text class="tbl-row" x="550" y="328">product_category_name → EN</text>
+          </g>
+
+          <!-- 5. orders (CENTRAL) -->
+          <g>
+            <rect class="tbl-card" x="540" y="350" width="240" height="130" stroke="#FF4011" stroke-width="3"/>
+            <rect x="540" y="350" width="240" height="24" fill="#FF4011"/>
+            <text class="tbl-head-text" x="660" y="367" text-anchor="middle" font-size="13" letter-spacing=".16em">orders · 99,441</text>
+            <text class="tbl-row tbl-row-pk" x="550" y="395" font-size="12">order_id (PK)</text>
+            <text class="tbl-row" x="550" y="415" font-size="12">customer_id  (FK)</text>
+            <text class="tbl-row" x="550" y="433" font-size="12">order_status</text>
+            <text class="tbl-row" x="550" y="451" font-size="12">order_purchase_timestamp</text>
+            <text class="tbl-row tbl-row-mute" x="550" y="471" font-size="11">+ 3 more timestamps</text>
+          </g>
+
+          <!-- 6. order_items -->
+          <g>
+            <rect class="tbl-card" x="540" y="490" width="240" height="60" stroke="#FF4011"/>
+            <rect x="540" y="490" width="240" height="20" fill="#FF4011"/>
+            <text class="tbl-head-text" x="660" y="505" text-anchor="middle" font-size="11" letter-spacing=".14em">order_items · 112,650</text>
+            <text class="tbl-row" x="550" y="525" font-size="11">(order_id, item) · seller_id · product_id</text>
+            <text class="tbl-row tbl-row-mute" x="550" y="542" font-size="11">price · freight_value</text>
+          </g>
+
+          <!-- 7. order_payments -->
+          <g>
+            <rect class="tbl-card" x="540" y="560" width="240" height="56" stroke="#FF4011"/>
+            <rect x="540" y="560" width="240" height="20" fill="#FF4011"/>
+            <text class="tbl-head-text" x="660" y="575" text-anchor="middle" font-size="11" letter-spacing=".14em">order_payments · 103,886</text>
+            <text class="tbl-row" x="550" y="595" font-size="11">(order_id, seq) · payment_type</text>
+            <text class="tbl-row tbl-row-mute" x="550" y="610" font-size="11">payment_value · installments</text>
+          </g>
+
+          <!-- 8. customers -->
+          <g>
+            <rect class="tbl-card" x="1180" y="170" width="210" height="120" stroke="#FF009C"/>
+            <rect x="1180" y="170" width="210" height="22" fill="#FF009C"/>
+            <text class="tbl-head-text" x="1285" y="186" text-anchor="middle" font-size="12" letter-spacing=".14em">customers · 99,441</text>
+            <text class="tbl-row tbl-row-pk" x="1190" y="215">customer_id (PK)</text>
+            <text class="tbl-row" x="1190" y="237">customer_unique_id</text>
+            <text class="tbl-row" x="1190" y="257">customer_zip_code_prefix</text>
+            <text class="tbl-row tbl-row-mute" x="1190" y="278">→ 96,096 unique people</text>
+          </g>
+
+          <!-- 9. order_reviews -->
+          <g>
+            <rect class="tbl-card" x="1180" y="510" width="210" height="130" stroke="#FF009C" stroke-width="3"/>
+            <rect x="1180" y="510" width="210" height="22" fill="#FF009C"/>
+            <text class="tbl-head-text" x="1285" y="526" text-anchor="middle" font-size="12" letter-spacing=".14em">order_reviews · 104,162</text>
+            <text class="tbl-row tbl-row-pk" x="1190" y="555">review_id (PK)</text>
+            <text class="tbl-row" x="1190" y="577">order_id  (FK)</text>
+            <text class="tbl-row" x="1190" y="597">review_score (1–5)</text>
+            <text class="tbl-row" x="1190" y="617">review_comment_message</text>
+            <text class="tbl-row tbl-row-mute" x="1190" y="635">43k with PT text</text>
+          </g>
+        </svg>
+      </div>
+    </div>
+    <div class="slide-foot">Olist Supply-Chain Risk · <strong>Data foundation</strong></div>
+    <div class="slide-num">03 / 10</div>
+  </section>
+
+  <!-- ============================================================
+       SLIDE 4 — 4 V's
+       ============================================================ -->
+  <section class="slide slide--content slide--vs" data-slide="4">
+    <img class="frame-logo" src="assets/novaims-logo.png" alt="NOVA IMS" />
+    <img class="frame-mosaic" src="assets/novaims-mosaic.png" alt="" />
+    <div class="diagram-bg">
+      <svg class="diagram-2" viewBox="0 0 1400 800" preserveAspectRatio="xMidYMid meet">
+        <!-- Faded shapes echoing the slide-2 anchor -->
+        <rect fill="#1A1A1A" x="0" y="20" width="1400" height="70"/>
+        <rect fill="#FFFFFF" stroke="#1A1A1A" stroke-width="2" x="50" y="180" width="200" height="100"/>
+        <rect fill="#FFFFFF" stroke="#1A1A1A" stroke-width="3" x="30" y="320" width="240" height="160"/>
+        <rect fill="#FFFFFF" stroke="#1A1A1A" stroke-width="2" x="50" y="520" width="200" height="100"/>
+        <rect fill="#FFFFFF" stroke="#1A1A1A" stroke-width="2" x="560" y="185" width="200" height="70"/>
+        <rect fill="#FFFFFF" stroke="#1A1A1A" stroke-width="2" x="560" y="270" width="200" height="70"/>
+        <rect fill="#FFFFFF" stroke="#1A1A1A" stroke-width="2" x="560" y="355" width="200" height="70"/>
+        <rect fill="#FFFFFF" stroke="#1A1A1A" stroke-width="2" x="560" y="440" width="200" height="70"/>
+        <rect fill="#FFFFFF" stroke="#1A1A1A" stroke-width="2" x="560" y="525" width="200" height="70"/>
+        <rect fill="#FFFFFF" stroke="#1A1A1A" stroke-width="2" x="990" y="190" width="350" height="280"/>
+        <path fill="#FFFFFF" stroke="#1A1A1A" stroke-width="2" d="M990 530 Q990 515 1005 515 L1325 515 Q1340 515 1340 530 L1340 660 Q1340 675 1325 675 L1100 675 L1075 700 L1090 675 L1005 675 Q990 675 990 660 Z"/>
+        <g stroke="#1A1A1A" stroke-width="2" fill="none">
+          <path d="M250,230 L990,250"/>
+          <path d="M270,400 L990,330"/>
+          <path d="M250,570 L990,400"/>
+        </g>
+      </svg>
+    </div>
+    <div class="content">
+      <div class="headline-block">
+        <span class="eyebrow eyebrow--green">Why this is a big-data challenge</span>
+        <h2 class="h2">The marketplace generates the <em>4 V's by design.</em></h2>
+      </div>
+      <div class="quad-grid">
+        <div class="quad quad--blue">
+          <div class="quad-num">V₁</div>
+          <div class="quad-title">Volume</div>
+          <div class="quad-body">Every transaction across the customer–seller graph, growing weekly. Today: <strong>96k orders · 3k sellers · 96k customers · 100k+ reviews</strong>. Tomorrow: ten times that.</div>
+        </div>
+        <div class="quad quad--green">
+          <div class="quad-num">V₂</div>
+          <div class="quad-title">Velocity</div>
+          <div class="quad-body">New orders, reviews, and delivery events arrive <strong>continuously</strong>. Risk scoring must refresh weekly — same code, same pipeline, every Monday.</div>
+        </div>
+        <div class="quad quad--pink">
+          <div class="quad-num">V₃</div>
+          <div class="quad-title">Variety</div>
+          <div class="quad-body">Structured orders + <strong>Portuguese free-text reviews</strong> + geographic coordinates + network/graph relationships. Four data shapes, one pipeline.</div>
+        </div>
+        <div class="quad quad--yellow">
+          <div class="quad-num">V₄</div>
+          <div class="quad-title">Veracity</div>
+          <div class="quad-body"><strong>8.1% of orders are late</strong>. Worst state (AL) 23.9% vs best (SC) 9.8%. Missing reviews, inconsistent seller data — the analysis must absorb the noise.</div>
+        </div>
+      </div>
+    </div>
+    <div class="slide-foot">Olist Supply-Chain Risk · <strong>The 4 V's</strong></div>
+    <div class="slide-num">04 / 10</div>
+  </section>
+
+  <!-- ============================================================
+       SLIDE 5 — WHY SPARK FITS
+       ============================================================ -->
+  <section class="slide slide--content" data-slide="5">
+    <img class="frame-logo" src="assets/novaims-logo.png" alt="NOVA IMS" />
+    <img class="frame-mosaic" src="assets/novaims-mosaic.png" alt="" />
+    <div class="content">
+      <div class="headline-block">
+        <span class="eyebrow eyebrow--orange">Why Spark</span>
+        <h2 class="h2">Spark speaks the <em>language of networks.</em></h2>
+        <p class="lede" style="margin-top:18px;">Each demand of this problem maps to a native Spark primitive — so the prototype is also the production path.</p>
+      </div>
+      <div class="spark-table">
+        <div class="spark-th">The network demands…</div>
+        <div class="spark-th">Spark delivers…</div>
+
+        <div class="spark-cell spark-cell--demand">Joins across 9 interlinked tables, daily</div>
+        <div class="spark-cell spark-cell--spark"><strong>Distributed joins</strong> + <strong>broadcast()</strong> on small lookups (sellers, products, geo centroids)</div>
+
+        <div class="spark-cell spark-cell--demand">Graph analysis — who depends on whom?</div>
+        <div class="spark-cell spark-cell--spark"><strong>GraphFrames</strong> — native PageRank, connected components, motifs, BFS</div>
+
+        <div class="spark-cell spark-cell--demand">Weekly trends per seller + per category</div>
+        <div class="spark-cell spark-cell--spark"><strong>Window functions</strong> + <strong>MLlib Pipelines</strong> for rolling features &amp; cross-validation</div>
+
+        <div class="spark-cell spark-cell--demand">Refresh as new orders arrive</div>
+        <div class="spark-cell spark-cell--spark"><strong>Lazy execution</strong> + step cache — only what changed re-runs</div>
+
+        <div class="spark-cell spark-cell--demand">Growth from thousands to millions of sellers</div>
+        <div class="spark-cell spark-cell--spark"><strong>Same code, laptop today → cluster tomorrow</strong> (Databricks / EMR, zero rewrite)</div>
+      </div>
+    </div>
+    <div class="slide-foot">Olist Supply-Chain Risk · <strong>Why Spark</strong></div>
+    <div class="slide-num">05 / 10</div>
+  </section>
+
+  <!-- ============================================================
+       SLIDE 6 — PROTOTYPES (network lights up)
+       ============================================================ -->
+  <section class="slide slide--content" data-slide="6">
+    <img class="frame-logo" src="assets/novaims-logo.png" alt="NOVA IMS" />
+    <img class="frame-mosaic" src="assets/novaims-mosaic.png" alt="" />
+    <div class="content content--padright content--diagram">
+      <div class="headline-block">
+        <span class="eyebrow eyebrow--pink">The prototypes</span>
+        <h2 class="h2">Four prototypes, <em>one network view.</em></h2>
+      </div>
+      <div class="diagram-wrap">
+        <svg class="diagram-2" viewBox="0 0 1400 800" preserveAspectRatio="xMidYMid meet">
+          <defs>
+            <marker id="sup-arr-p" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto">
+              <path d="M0,0 L10,5 L0,10 z" fill="#0ab15b"/>
+            </marker>
+            <marker id="dem-arr-p" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto">
+              <path d="M0,0 L10,5 L0,10 z" fill="#3777FF"/>
+            </marker>
+          </defs>
+
+          <!-- ============ ANCHOR DIAGRAM (faded) ============ -->
+          <g opacity="0.32">
+            <rect fill="#0A0A0A" x="0" y="20" width="1400" height="70"/>
+            <text fill="#FFFFFF" font-weight="900" x="700" y="66" text-anchor="middle" font-size="26" letter-spacing=".22em" font-family="Borna,Inter,sans-serif">OLIST · THE MARKETPLACE PLATFORM</text>
+
+            <text x="150" y="130" text-anchor="middle" font-size="15" letter-spacing=".22em" fill="#6B6B6B" font-weight="800">SELLERS · ~3,000</text>
+            <text x="660" y="130" text-anchor="middle" font-size="15" letter-spacing=".22em" fill="#6B6B6B" font-weight="800">PRODUCTS · ~33,000</text>
+            <text x="1170" y="130" text-anchor="middle" font-size="15" letter-spacing=".22em" fill="#6B6B6B" font-weight="800">CUSTOMER BASE · ~96,000</text>
+
+            <!-- Demand lines -->
+            <g stroke="#3777FF" stroke-width="2.2" stroke-dasharray="8 5" fill="none" opacity=".85">
+              <path d="M990,250 Q900,235 760,220" marker-end="url(#dem-arr-p)"/>
+              <path d="M990,290 Q900,300 760,305" marker-end="url(#dem-arr-p)"/>
+              <path d="M990,330 Q900,360 760,390" marker-end="url(#dem-arr-p)"/>
+              <path d="M990,370 Q900,425 760,475" marker-end="url(#dem-arr-p)"/>
+              <path d="M990,410 Q900,490 760,560" marker-end="url(#dem-arr-p)"/>
+            </g>
+            <!-- Supply lines -->
+            <g stroke="#0ab15b" stroke-width="3" fill="none">
+              <path d="M250,230 L560,220"/><path d="M760,220 L990,260" marker-end="url(#sup-arr-p)"/>
+              <path d="M270,360 L560,305"/><path d="M760,305 L990,295" marker-end="url(#sup-arr-p)"/>
+              <path d="M270,400 L560,390"/><path d="M760,390 L990,330" marker-end="url(#sup-arr-p)"/>
+              <path d="M270,440 L560,475"/><path d="M760,475 L990,365" marker-end="url(#sup-arr-p)"/>
+              <path d="M250,570 L560,560"/><path d="M760,560 L990,400" marker-end="url(#sup-arr-p)"/>
+            </g>
+
+            <!-- Sellers -->
+            <rect x="50" y="180" width="200" height="100" fill="#FFFFFF" stroke="#0A0A0A" stroke-width="2.5"/>
+            <text x="150" y="220" text-anchor="middle" font-size="22" font-weight="900">Seller A</text>
+            <text x="150" y="250" text-anchor="middle" font-size="13" fill="#6B6B6B">1 product</text>
+            <rect x="30" y="320" width="240" height="160" fill="#FFF5F2" stroke="#FF4011" stroke-width="4"/>
+            <text x="150" y="370" text-anchor="middle" font-size="30" font-weight="900">Seller B</text>
+            <rect x="60" y="386" width="180" height="26" fill="#FF4011"/>
+            <text x="150" y="405" text-anchor="middle" font-size="14" font-weight="900" fill="#FFFFFF" letter-spacing=".18em">HUB SELLER</text>
+            <text x="150" y="436" text-anchor="middle" font-size="14" fill="#0A0A0A" font-weight="700">3 products</text>
+            <rect x="50" y="520" width="200" height="100" fill="#FFFFFF" stroke="#0A0A0A" stroke-width="2.5"/>
+            <text x="150" y="560" text-anchor="middle" font-size="22" font-weight="900">Seller C</text>
+            <text x="150" y="590" text-anchor="middle" font-size="13" fill="#6B6B6B">1 product</text>
+
+            <!-- Products -->
+            <rect x="560" y="185" width="200" height="70" fill="#FFFFFF" stroke="#0ab15b" stroke-width="2.5"/>
+            <text x="660" y="227" text-anchor="middle" font-size="18" font-weight="800">Product 1</text>
+            <rect x="560" y="270" width="200" height="70" fill="#FFFFFF" stroke="#0ab15b" stroke-width="2.5"/>
+            <text x="660" y="312" text-anchor="middle" font-size="18" font-weight="800">Product 2</text>
+            <rect x="560" y="355" width="200" height="70" fill="#FFFFFF" stroke="#0ab15b" stroke-width="2.5"/>
+            <text x="660" y="397" text-anchor="middle" font-size="18" font-weight="800">Product 3</text>
+            <rect x="560" y="440" width="200" height="70" fill="#FFFFFF" stroke="#0ab15b" stroke-width="2.5"/>
+            <text x="660" y="482" text-anchor="middle" font-size="18" font-weight="800">Product 4</text>
+            <rect x="560" y="525" width="200" height="70" fill="#FFFFFF" stroke="#0ab15b" stroke-width="2.5"/>
+            <text x="660" y="567" text-anchor="middle" font-size="18" font-weight="800">Product 5</text>
+
+            <!-- Customer base -->
+            <rect x="990" y="190" width="350" height="280" fill="#FFFFFF" stroke="#FF009C" stroke-width="3"/>
+            <text x="1165" y="240" text-anchor="middle" font-size="26" font-weight="900">Customer base</text>
+            <text x="1165" y="268" text-anchor="middle" font-size="16" fill="#FF009C" font-weight="800">~96,000 Brazilian buyers</text>
+            <g fill="#FF009C" opacity=".55">
+              <circle cx="1040" cy="320" r="5"/><circle cx="1090" cy="320" r="5"/><circle cx="1140" cy="320" r="5"/><circle cx="1190" cy="320" r="5"/><circle cx="1240" cy="320" r="5"/><circle cx="1290" cy="320" r="5"/>
+              <circle cx="1065" cy="350" r="5"/><circle cx="1115" cy="350" r="5"/><circle cx="1165" cy="350" r="5"/><circle cx="1215" cy="350" r="5"/><circle cx="1265" cy="350" r="5"/>
+              <circle cx="1040" cy="380" r="5"/><circle cx="1090" cy="380" r="5"/><circle cx="1140" cy="380" r="5"/><circle cx="1190" cy="380" r="5"/><circle cx="1240" cy="380" r="5"/><circle cx="1290" cy="380" r="5"/>
+              <circle cx="1065" cy="410" r="5"/><circle cx="1115" cy="410" r="5"/><circle cx="1165" cy="410" r="5"/><circle cx="1215" cy="410" r="5"/><circle cx="1265" cy="410" r="5"/>
+              <circle cx="1040" cy="440" r="5"/><circle cx="1090" cy="440" r="5"/><circle cx="1140" cy="440" r="5"/><circle cx="1190" cy="440" r="5"/><circle cx="1240" cy="440" r="5"/><circle cx="1290" cy="440" r="5"/>
+            </g>
+
+            <!-- Review bubble -->
+            <path d="M990 530 Q990 515 1005 515 L1325 515 Q1340 515 1340 530 L1340 660 Q1340 675 1325 675 L1100 675 L1075 700 L1090 675 L1005 675 Q990 675 990 660 Z" fill="#FFE5F2" stroke="#FF009C" stroke-width="3"/>
+            <text x="1165" y="555" text-anchor="middle" font-size="14" font-weight="800" fill="#FF009C" letter-spacing=".18em">SAMPLE REVIEW</text>
+            <text x="1165" y="590" text-anchor="middle" font-size="20" font-style="italic" fill="#0A0A0A">"Arrived late, damaged."</text>
+            <text x="1165" y="630" text-anchor="middle" font-size="26" font-weight="900" fill="#FF009C">★ ★ ☆ ☆ ☆</text>
+          </g>
+
+          <!-- ============ CAPABILITY HIGHLIGHTS (full opacity) ============ -->
+          <!-- ③ Supply-Network Graph (green, encompassing dashed) -->
+          <rect class="df-hl df-hl--network" x="10" y="105" width="1380" height="595" rx="6"/>
+          <rect x="450" y="92" width="500" height="26" fill="#0ab15b"/>
+          <text x="700" y="111" text-anchor="middle" fill="#FFFFFF" font-size="14" font-weight="900" letter-spacing=".22em">③ SUPPLY-NETWORK GRAPH (whole network)</text>
+
+          <!-- ④ Risk Archetypes (orange, sellers column) -->
+          <rect class="df-hl df-hl--archetype" x="18" y="155" width="270" height="490"/>
+          <rect x="20" y="650" width="266" height="26" fill="#FF4011"/>
+          <text x="153" y="669" text-anchor="middle" fill="#FFFFFF" font-size="13" font-weight="900" letter-spacing=".18em">④ RISK ARCHETYPES</text>
+
+          <!-- ① Demand Forecaster (blue, supply/demand lines area) -->
+          <rect class="df-hl df-hl--demand" x="298" y="160" width="690" height="485"/>
+          <rect x="450" y="650" width="390" height="26" fill="#3777FF"/>
+          <text x="645" y="669" text-anchor="middle" fill="#FFFFFF" font-size="13" font-weight="900" letter-spacing=".18em">① DEMAND FORECASTER</text>
+
+          <!-- ② Sentiment Monitor (pink, review bubble) -->
+          <rect class="df-hl df-hl--sentiment" x="980" y="505" width="365" height="180"/>
+          <rect x="1003" y="690" width="320" height="26" fill="#FF009C"/>
+          <text x="1163" y="709" text-anchor="middle" fill="#FFFFFF" font-size="13" font-weight="900" letter-spacing=".18em">② SENTIMENT MONITOR</text>
+        </svg>
+      </div>
+    </div>
+
+    <div class="proto-legend">
+      <div class="proto-item proto-item--demand">
+        <div class="pi-title">① Demand Forecaster</div>
+        <div class="pi-body">Predicts which sellers' volume will drop · GBT RMSE 4.94</div>
+      </div>
+      <div class="proto-item proto-item--sentiment">
+        <div class="pi-title">② Sentiment Monitor</div>
+        <div class="pi-body">Weekly tone per seller · LSTM AUC 0.96 · PT free-text</div>
+      </div>
+      <div class="proto-item proto-item--network">
+        <div class="pi-title">③ Supply-Network Graph</div>
+        <div class="pi-body">PageRank + BFS · names a backup seller for every hub</div>
+      </div>
+      <div class="proto-item proto-item--archetype">
+        <div class="pi-title">④ Risk Archetypes</div>
+        <div class="pi-body">Spark MLlib KMeans · groups sellers by failure mode</div>
+      </div>
+      <div class="proto-converge">▼ converge</div>
+      <div class="proto-output">
+        <div class="po-label">SELLER RISK INDEX</div>
+        <div class="po-bands">SAFE · WARNING · CRITICAL</div>
+        <div class="po-sub">per seller · weekly · with archetype + action</div>
+      </div>
+    </div>
+
+    <div class="slide-foot">Olist Supply-Chain Risk · <strong>The prototypes</strong></div>
+    <div class="slide-num">06 / 10</div>
+  </section>
+
+  <!-- ============================================================
+       SLIDE 7 — UNIFYING OUTPUT: Seller Risk Index
+       ============================================================ -->
+  <section class="slide slide--content" data-slide="7">
+    <img class="frame-logo" src="assets/novaims-logo.png" alt="NOVA IMS" />
+    <img class="frame-mosaic" src="assets/novaims-mosaic.png" alt="" />
+    <div class="content">
+      <div class="headline-block">
+        <span class="eyebrow eyebrow--orange">The unifying output</span>
+        <h2 class="h2">From a network of signals to a <em>weekly watchlist.</em></h2>
+      </div>
+      <div class="flow-row">
+        <div class="flow-col-left">
+          <div class="stream stream--demand">
+            <div class="stream-dot">①</div>
+            <div class="stream-name">Demand score</div>
+            <div class="stream-w">× 0.35</div>
+          </div>
+          <div class="stream stream--sentiment">
+            <div class="stream-dot">②</div>
+            <div class="stream-name">Sentiment score</div>
+            <div class="stream-w">× 0.35</div>
+          </div>
+          <div class="stream stream--network">
+            <div class="stream-dot">③</div>
+            <div class="stream-name">Network score</div>
+            <div class="stream-w">× 0.30</div>
+          </div>
+          <div class="flow-arrow">▼</div>
+          <div class="composite">
+            <div>
+              <div class="c-label">Seller Risk Index</div>
+              <div class="c-eq">min-max normalised · weighted composite · banded</div>
+            </div>
+            <div class="c-formula">0.35·D + 0.35·S + 0.30·N</div>
+          </div>
+        </div>
+
+        <div class="watchlist">
+          <div class="wl-head">
+            <div class="wl-title">SELLER WATCHLIST — week of 2026-05-18</div>
+            <div class="wl-stamp">auto-refreshed</div>
+          </div>
+          <div class="wl-bands">
+            <div class="wl-band wl-band--safe"><div class="b-num">2,899</div><div class="b-label">SAFE</div></div>
+            <div class="wl-band wl-band--warn"><div class="b-num">68</div><div class="b-label">WARNING</div></div>
+            <div class="wl-band wl-band--crit"><div class="b-num">0</div><div class="b-label">CRITICAL</div></div>
+          </div>
+          <table class="wl-table">
+            <thead>
+              <tr><th>Seller</th><th>State</th><th>Band</th><th>Archetype</th><th>Action</th></tr>
+            </thead>
+            <tbody>
+              <tr><td><span class="mono">4a3ca931…</span></td><td>SP</td><td><span class="wl-pill wl-pill--warn">WARN</span></td><td>Centrality-driven</td><td>Assign backup</td></tr>
+              <tr><td><span class="mono">cc419e06…</span></td><td>RJ</td><td><span class="wl-pill wl-pill--warn">WARN</span></td><td>Delay-driven</td><td>Logistics audit</td></tr>
+              <tr><td><span class="mono">1f50f920…</span></td><td>SP</td><td><span class="wl-pill wl-pill--warn">WARN</span></td><td>Sentiment-driven</td><td>Account contact</td></tr>
+              <tr><td><span class="mono">7a67c85e…</span></td><td>MG</td><td><span class="wl-pill wl-pill--warn">WARN</span></td><td>Delay-driven</td><td>Logistics audit</td></tr>
+              <tr><td><span class="mono">955fee92…</span></td><td>SP</td><td><span class="wl-pill wl-pill--safe">SAFE</span></td><td>Best in class</td><td>—</td></tr>
+              <tr><td><span class="mono">ea8482cd…</span></td><td>PR</td><td><span class="wl-pill wl-pill--warn">WARN</span></td><td>Centrality-driven</td><td>Assign backup</td></tr>
+            </tbody>
+          </table>
+        </div>
+      </div>
+    </div>
+    <div class="slide-foot">Olist Supply-Chain Risk · <strong>Seller Risk Index</strong></div>
+    <div class="slide-num">07 / 10</div>
+  </section>
+
+  <!-- ============================================================
+       SLIDE 8 — INSIGHTS
+       ============================================================ -->
+  <section class="slide slide--content" data-slide="8">
+    <img class="frame-logo" src="assets/novaims-logo.png" alt="NOVA IMS" />
+    <img class="frame-mosaic" src="assets/novaims-mosaic.png" alt="" />
+    <div class="content">
+      <div class="headline-block">
+        <span class="eyebrow eyebrow--green">Insights only the network reveals</span>
+        <h2 class="h2">Two findings you <em>can't see</em> from per-seller dashboards.</h2>
+      </div>
+
+      <div class="insights">
+        <div class="insight insight--a">
+          <div class="i-eyebrow">FINDING 1 · ORDERS / DELIVERY</div>
+          <div class="i-title">Delivery behaviour <em>predicts.</em><br/>Sentiment only <em>confirms.</em></div>
+          <div class="i-body">Reviews <em>classify</em> cleanly (LSTM AUC 0.96), but lead-correlation against weekly volume peaks at only <strong>|0.015| at 7 weeks</strong>. Delays move first — reviews catch up.</div>
+          <div class="i-fig"><img src="assets/charts/lag_corr.png" alt="Sentiment vs volume lag correlation"/></div>
+        </div>
+
+        <div class="insight insight--b">
+          <div class="i-eyebrow">FINDING 2 · WHOLE NETWORK</div>
+          <div class="i-title">Hub sellers <em>shift</em> under stress.</div>
+          <div class="i-body">The PageRank top-10 changes when we re-run on the late-orders subgraph. A "fragility map" you only get by looking at the network — not the per-seller KPI dashboard.</div>
+          <div class="hubshift">
+            <div class="hs-state">
+              <div class="hs-label">Top 5 hubs · all orders</div>
+              <div class="hs-row"><div class="hs-rank">1</div><div class="hs-id">6560211a…</div><div class="hs-pr">643.5</div></div>
+              <div class="hs-row"><div class="hs-rank">2</div><div class="hs-id">4a3ca931…</div><div class="hs-pr">610.6</div></div>
+              <div class="hs-row"><div class="hs-rank">3</div><div class="hs-id">cc419e06…</div><div class="hs-pr">580.4</div></div>
+              <div class="hs-row"><div class="hs-rank">4</div><div class="hs-id">1f50f920…</div><div class="hs-pr">493.8</div></div>
+              <div class="hs-row"><div class="hs-rank">5</div><div class="hs-id">955fee92…</div><div class="hs-pr">458.1</div></div>
+            </div>
+            <div class="hs-arrow">→</div>
+            <div class="hs-state hubshift--after">
+              <div class="hs-label">Top 5 hubs · LATE subgraph</div>
+              <div class="hs-row hs-row--new"><div class="hs-rank">1</div><div class="hs-id">4869f7a5…</div><div class="hs-pr">↑ new</div></div>
+              <div class="hs-row"><div class="hs-rank">2</div><div class="hs-id">4a3ca931…</div><div class="hs-pr">—</div></div>
+              <div class="hs-row hs-row--new"><div class="hs-rank">3</div><div class="hs-id">ea8482cd…</div><div class="hs-pr">↑ new</div></div>
+              <div class="hs-row"><div class="hs-rank">4</div><div class="hs-id">1f50f920…</div><div class="hs-pr">—</div></div>
+              <div class="hs-row hs-row--gone"><div class="hs-rank">5</div><div class="hs-id">955fee92…</div><div class="hs-pr">↓ out</div></div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+    <div class="slide-foot">Olist Supply-Chain Risk · <strong>Insights</strong></div>
+    <div class="slide-num">08 / 10</div>
+  </section>
+
+  <!-- ============================================================
+       SLIDE 9 — WHAT OLIST GAINS
+       ============================================================ -->
+  <section class="slide slide--content" data-slide="9">
+    <img class="frame-logo" src="assets/novaims-logo.png" alt="NOVA IMS" />
+    <img class="frame-mosaic" src="assets/novaims-mosaic.png" alt="" />
+    <div class="content">
+      <div class="headline-block">
+        <span class="eyebrow eyebrow--orange">Value for the client</span>
+        <h2 class="h2">From a list of sellers to a <em>managed network.</em></h2>
+      </div>
+      <div class="gains">
+        <div class="gain gain--a">
+          <div class="g-num">01</div>
+          <div class="g-from-to"><span class="from">Reactive</span> &nbsp;→&nbsp; <span class="to">Proactive</span></div>
+          <div class="g-title">Weekly risk score per seller</div>
+          <div class="g-body">No more waiting for refund tickets. Every seller gets a band and an archetype tag, every Monday — before the customer complains.</div>
+        </div>
+        <div class="gain gain--b">
+          <div class="g-num">02</div>
+          <div class="g-from-to"><span class="from">2,970 sellers</span> &nbsp;→&nbsp; <span class="to">68 to call</span></div>
+          <div class="g-title">An actionable shortlist</div>
+          <div class="g-body">Success teams get a tractable WARNING list with a recommended action per archetype — not a haystack.</div>
+        </div>
+        <div class="gain gain--c">
+          <div class="g-num">03</div>
+          <div class="g-from-to"><span class="from">Single point of failure</span> &nbsp;→&nbsp; <span class="to">Named backup</span></div>
+          <div class="g-title">Category-level resilience</div>
+          <div class="g-body">BFS on the supply graph names a backup seller for every hub. A seller outage no longer becomes a category outage.</div>
+        </div>
+        <div class="gain gain--d">
+          <div class="g-num">04</div>
+          <div class="g-from-to"><span class="from">Today's CSV</span> &nbsp;→&nbsp; <span class="to">Tomorrow's cluster</span></div>
+          <div class="g-title">Scales as Olist grows</div>
+          <div class="g-body">Same pipeline runs on a laptop today and on Databricks / EMR tomorrow. The prototype is the production path — zero rewrite.</div>
+        </div>
+      </div>
+    </div>
+    <div class="slide-foot">Olist Supply-Chain Risk · <strong>The value</strong></div>
+    <div class="slide-num">09 / 10</div>
+  </section>
+
+  <!-- ============================================================
+       SLIDE 10 — REFERENCES & NEXT STEPS
+       ============================================================ -->
+  <section class="slide slide--content" data-slide="10">
+    <img class="frame-logo" src="assets/novaims-logo.png" alt="NOVA IMS" />
+    <img class="frame-mosaic" src="assets/novaims-mosaic.png" alt="" />
+    <div class="content">
+      <div class="headline-block">
+        <span class="eyebrow eyebrow--blue">Close · next steps · references</span>
+        <h2 class="h2"><em>Thank you.</em></h2>
+      </div>
+      <div class="close-list">
+        <div class="close-col">
+          <h4>What we built</h4>
+          <ul>
+            <li><b>·</b> One PySpark notebook (top-to-bottom consulting story, executed with visible outputs)</li>
+            <li><b>·</b> Four prototypes: Demand Forecaster · Sentiment Monitor · Supply-Network Graph · Risk Archetypes</li>
+            <li><b>·</b> One unified deliverable: the Seller Risk Index — weekly watchlist with archetype + action</li>
+            <li><b>·</b> Reproducible step cache · 6 parquet outputs · deterministic across runs</li>
+          </ul>
+        </div>
+        <div class="close-col">
+          <h4>What's next</h4>
+          <ul>
+            <li><b>·</b> Productionise on <strong>Databricks / EMR</strong> — same code, scheduled weekly</li>
+            <li><b>·</b> Wire watchlist into the seller-success CRM (Slack alerts for new WARNING entries)</li>
+            <li><b>·</b> Bring in streaming order events (Spark Structured Streaming) for sub-daily refresh</li>
+            <li><b>·</b> Expand graph: include category, postal region, and shipper as additional vertex types</li>
+          </ul>
+        </div>
+      </div>
+      <div class="close-stamp">
+        <span class="arrow">→</span>
+        Productionise on Databricks / EMR — <strong>zero code rewrite</strong>. The prototype <em>is</em> the production path.
+      </div>
+    </div>
+    <div class="slide-foot">Olist Supply-Chain Risk · <strong>BigDataCompany × NOVA IMS · 2025/26</strong></div>
+    <div class="slide-num">10 / 10</div>
+  </section>
+
+</div>
+
+<!-- nav overlay -->
+<div class="nav-edge nav-edge--prev" id="navPrev" title="Previous slide"></div>
+<div class="nav-edge nav-edge--next" id="navNext" title="Next slide"></div>
+<nav class="pager" id="pager" aria-label="Slide navigation"></nav>
+<div class="help-hint">← → · F: fullscreen</div>
+
+<script>
+(() => {
+  const slides = Array.from(document.querySelectorAll('.slide'));
+  const stage  = document.getElementById('stage');
+  const pager  = document.getElementById('pager');
+  const SLIDE_W = 1920, SLIDE_H = 1080;
+  let idx = 0;
+
+  // build pager dots
+  slides.forEach((_, i) => {
+    const b = document.createElement('button');
+    b.className = 'dot';
+    b.setAttribute('aria-label', `Slide ${i+1}`);
+    b.addEventListener('click', () => go(i));
+    pager.appendChild(b);
+  });
+
+  function fitStage() {
+    const vw = window.innerWidth;
+    const vh = window.innerHeight;
+    const scale = Math.min(vw / SLIDE_W, vh / SLIDE_H);
+    slides.forEach(s => {
+      s.style.transform = `scale(${scale})`;
+    });
+  }
+
+  function go(i) {
+    if (i < 0) i = 0;
+    if (i >= slides.length) i = slides.length - 1;
+    slides[idx].classList.remove('active');
+    idx = i;
+    slides[idx].classList.add('active');
+    Array.from(pager.children).forEach((d, j) => d.classList.toggle('active', j === idx));
+    // url hash for deep linking
+    history.replaceState(null, '', `#${idx+1}`);
+  }
+
+  // keyboard
+  window.addEventListener('keydown', (e) => {
+    if (e.key === 'ArrowRight' || e.key === 'PageDown' || e.key === ' ') { go(idx + 1); e.preventDefault(); }
+    else if (e.key === 'ArrowLeft' || e.key === 'PageUp') { go(idx - 1); e.preventDefault(); }
+    else if (e.key === 'Home') { go(0); }
+    else if (e.key === 'End') { go(slides.length - 1); }
+    else if (e.key === 'f' || e.key === 'F') {
+      if (!document.fullscreenElement) document.documentElement.requestFullscreen();
+      else document.exitFullscreen();
+    }
+  });
+
+  document.getElementById('navPrev').addEventListener('click', () => go(idx - 1));
+  document.getElementById('navNext').addEventListener('click', () => go(idx + 1));
+
+  // touch swipe
+  let touchX = null;
+  window.addEventListener('touchstart', (e) => touchX = e.touches[0].clientX);
+  window.addEventListener('touchend',   (e) => {
+    if (touchX === null) return;
+    const dx = e.changedTouches[0].clientX - touchX;
+    if (Math.abs(dx) > 60) go(idx + (dx < 0 ? 1 : -1));
+    touchX = null;
+  });
+
+  window.addEventListener('resize', fitStage);
+  fitStage();
+
+  // start from hash if provided
+  const hash = parseInt(window.location.hash.replace('#',''), 10);
+  if (!isNaN(hash) && hash >= 1 && hash <= slides.length) go(hash - 1);
+  else go(0);
+})();
+</script>
+</body>
+</html>
