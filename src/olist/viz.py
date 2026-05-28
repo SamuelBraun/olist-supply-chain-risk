@@ -38,10 +38,11 @@ import plotly.graph_objects as go
 import plotly.io as pio
 from plotly.subplots import make_subplots
 
-# Interactive in Jupyter (notebook_connected) + a static PNG MIME fallback so
-# the notebook still shows a chart when reopened on a kernel that lacks the
-# plotly.js JS bundle. Both representations are emitted as cell outputs.
-pio.renderers.default = "notebook_connected+png"
+# Static PNG via Kaleido. Single image MIME per cell -> survives nbconvert
+# and fresh-kernel reopens, passes scripts/assert_notebook_outputs.py.
+# We used to use "notebook_connected+png", which emitted BOTH renderers
+# and produced two outputs per figure (the double-render bug).
+pio.renderers.default = "png"
 
 _CAT_PALETTE: list[str] = list(px.colors.qualitative.D3)
 _RISK_SCALE = "Reds"
