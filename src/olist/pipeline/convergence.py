@@ -37,50 +37,51 @@ RISK_SAFE_THRESHOLD = 0.40
 
 @dataclass
 class NormalisationRanges:
-    """Min/max triples extracted from single-row aggregates, used as
-    broadcast literals for min-max normalisation.
+    """p1/p99 bounds per pre-normalised column, used as broadcast literals for
+    min-max normalisation. Percentile bounds (not raw min/max) so one extreme
+    seller can't compress everyone else's normalised score.
     """
 
     delay_lo: float
     delay_hi: float
     sentiment_lo: float
     sentiment_hi: float
-    network_lo: float
-    network_hi: float
+    contagion_lo: float
+    contagion_hi: float
+    deficit_lo: float
+    deficit_hi: float
 
 
 def compute_normalisation_ranges(joined: DataFrame) -> NormalisationRanges:
-    """Extract min/max for the three pre-normalised columns via three
-    single-row aggregates. Flagged as RISK_NORM_AGG — the `.first()` calls
-    are on one-row DataFrames by construction.
+    """Extract p1/p99 bounds for the four pre-normalised columns via
+    `approxQuantile`. Percentile bounds tame the long tails (delay outliers,
+    the 68%-zero contagion column) that raw min/max would otherwise let
+    dominate the scale.
     """
-    # BIG-DATA-SAFETY-ESCAPE: RISK_NORM_AGG — single-row aggregates
-    d = joined.agg(
-        F.min("avg_delay_days").alias("lo"),
-        F.max("avg_delay_days").alias("hi"),
-    ).first()
-    s = joined.agg(
-        F.min("avg_sentiment_score").alias("lo"),
-        F.max("avg_sentiment_score").alias("hi"),
-    ).first()
-    n = joined.agg(
-        F.min("network_risk_score").alias("lo"),
-        F.max("network_risk_score").alias("hi"),
-    ).first()
+    # BIG-DATA-SAFETY-ESCAPE: RISK_NORM_AGG — approxQuantile on a ~3k-row frame
+    delay_lo, delay_hi = joined.approxQuantile("avg_delay_days", [0.01, 0.99], 0.01)
+    sent_lo, sent_hi = joined.approxQuantile("avg_sentiment_score", [0.01, 0.99], 0.01)
+    cont_lo, cont_hi = joined.approxQuantile("network_risk_score", [0.01, 0.99], 0.01)
+    def_lo, def_hi = joined.approxQuantile("substitutability_deficit", [0.01, 0.99], 0.01)
     return NormalisationRanges(
-        delay_lo=float(d["lo"]),
-        delay_hi=float(d["hi"]),
-        sentiment_lo=float(s["lo"]),
-        sentiment_hi=float(s["hi"]),
-        network_lo=float(n["lo"]),
-        network_hi=float(n["hi"]),
+        delay_lo=float(delay_lo),
+        delay_hi=float(delay_hi),
+        sentiment_lo=float(sent_lo),
+        sentiment_hi=float(sent_hi),
+        contagion_lo=float(cont_lo),
+        contagion_hi=float(cont_hi),
+        deficit_lo=float(def_lo),
+        deficit_hi=float(def_hi),
     )
 
 
 def _min_max(col: str, lo: float, hi: float, invert: bool = False):
+    # Scale to [0, 1] then clamp, so sellers past the p1/p99 bounds saturate
+    # instead of producing scores outside [0, 1].
     span = (hi - lo) if (hi - lo) != 0 else 1.0
     scaled = (F.col(col) - lo) / span
-    return (F.lit(1.0) - scaled) if invert else scaled
+    clamped = F.greatest(F.lit(0.0), F.least(F.lit(1.0), scaled))
+    return (F.lit(1.0) - clamped) if invert else clamped
 
 
 @step(
@@ -101,13 +102,28 @@ def build_seller_risk_index(spark: SparkSession) -> DataFrame:
 
     Sentiment is inverted (higher = worse) so all three `*_norm` columns
     point in the same direction: higher = more risky.
+
+    The network axis is a 50/50 blend of *contagion* (delayed-subgraph
+    PageRank — a late-shipping hub) and *substitutability deficit* (high
+    impact, no backup). The deficit half is graph-unique and non-degenerate
+    across the whole population, so the network axis no longer collapses to a
+    degree proxy and is no longer zero for the two-thirds of sellers outside
+    the late-shipping subgraph.
     """
     demand = spark.read.parquet(resolve_path("outputs/nb1_seller_demand_scores.parquet"))
     sentiment = spark.read.parquet(resolve_path("outputs/nb2_seller_sentiment_scores.parquet"))
     network = spark.read.parquet(resolve_path("outputs/nb3_seller_network_scores.parquet"))
     joined = (
         demand.join(sentiment, "seller_id", "inner").join(
-            network.select("seller_id", "pagerank_score", "network_risk_score"),
+            network.select(
+                "seller_id",
+                "pagerank_score",
+                "network_risk_score",
+                "substitutability_deficit",
+                "backup_seller_id",
+                "backup_strength",
+                "community_id",
+            ),
             "seller_id",
             "inner",
         )
@@ -128,10 +144,18 @@ def build_seller_risk_index(spark: SparkSession) -> DataFrame:
             ),
         )
         .withColumn(
-            "network_norm",
+            "contagion_norm",
+            _min_max("network_risk_score", ranges.contagion_lo, ranges.contagion_hi),
+        )
+        .withColumn(
+            "deficit_norm",
             _min_max(
-                "network_risk_score", ranges.network_lo, ranges.network_hi
+                "substitutability_deficit", ranges.deficit_lo, ranges.deficit_hi
             ),
+        )
+        .withColumn(
+            "network_norm",
+            0.5 * F.col("contagion_norm") + 0.5 * F.col("deficit_norm"),
         )
         .withColumn(
             "risk_score",
@@ -145,6 +169,13 @@ def build_seller_risk_index(spark: SparkSession) -> DataFrame:
             .when(F.col("risk_score") < RISK_SAFE_THRESHOLD, "SAFE")
             .otherwise("WARNING"),
         )
+        .withColumn(
+            "escalate_no_backup",
+            (
+                (F.col("risk_class") != "SAFE")
+                & (F.coalesce(F.col("backup_strength"), F.lit(0)) == 0)
+            ).cast("int"),
+        )
         .select(
             "seller_id",
             "seller_state",
@@ -153,9 +184,16 @@ def build_seller_risk_index(spark: SparkSession) -> DataFrame:
             "demand_norm",
             "sentiment_norm",
             "network_norm",
+            "contagion_norm",
+            "deficit_norm",
             "avg_delay_days",
             "avg_sentiment_score",
             "pagerank_score",
+            "substitutability_deficit",
+            "backup_seller_id",
+            "backup_strength",
+            "community_id",
+            "escalate_no_backup",
             "sentiment_declining",
         )
     )

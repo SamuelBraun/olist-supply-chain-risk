@@ -1,82 +1,102 @@
-# Execution plan — 2026-04-20
+# Execution Plan — Max-Grade Remediation Pass
 
-Ground truth: parquets in `outputs/`. Plan below is the build order, not a recipe.
+Created 2026-05-29. Supersedes the 2026-04-20 four-notebook build plan (that work is long done).
+Drives the project from "strong, a few weak spots" to max-grade. Scope = every item the
+2026-05-29 audit flagged weak/partial. **Approval-gated per CLAUDE.md §9.3 — do not implement until signed off.**
 
-## 0. Env (done)
-Python 3.9.6 venv at `.venv/`, PySpark 3.5.8, PyTorch 2.8, Java 11 at `/opt/homebrew/opt/openjdk@11/libexec/openjdk.jdk/Contents/Home`, GraphFrames `0.8.3-spark3.5-s_2.12` resolves. First cell of every notebook must export `JAVA_HOME` before importing Spark — adding this to notebook boilerplate.
+## Audit findings being addressed
 
-## 1. Shared pre-step — `outputs/geo_centroids.parquet`
-One-off script (or NB1 prelude): aggregate `olist_geolocation_dataset` to one row per `zip_code_prefix` (mean lat/lon). Persist. Broadcasted from then on. Required by NB3 (state-level + distance features) and cheap to do once.
+| # | Finding | Severity | Phase |
+| --- | --- | --- | --- |
+| A | Graph analytics broad but not graph-*unique*: PageRank r=0.9998 vs in-degree; `network_risk_score` r=0.87 vs degree, zero for 68% of sellers; motif + BFS computed then **dropped** before the risk index | 🔴 highest (heaviest-weighted rubric area) | 3, 4 |
+| B | Stale "RandomForest selected" prose contradicts code/parquet (GBT selected) | 🟠 reviewer-visible | 0 |
+| C | RDD section decorative (output unused, fragile `split(",")`); reconciliation chain inlined in notebook (`build_main.py:371-388`) violates "no logic in cells" | 🟠 | 1 |
+| D | No outlier treatment; raw delay feeds GBT label and distorts min-max normalisation range | 🟡 | 2 |
+| E | Lazy-eval / transformation-vs-action never explicitly named (only class-material concept not surfaced) | 🟡 | 1 |
+| F | LSTM AUC drift: safety log 0.9630 vs spec 0.9619 | 🟢 cosmetic | 6 |
+| G | Stale "§1 + §2 only" scaffolding comment in `build_main.py:1-17` | 🟢 | 0 |
 
-## 2. Sequencing
-```
-geo_centroids ─┐
-               ├─► NB1 ─► nb1_weekly_order_volume.parquet ─┐
-               │          nb1_seller_demand_scores.parquet │
-               │                                            ├─► NB3 ─► convergence
-               └─► NB2 ──────────► nb2_seller_sentiment_scores.parquet
-                   (reads nb1_weekly_order_volume for lead-indicator section)
-```
-NB2 depends on NB1's `nb1_weekly_order_volume.parquet` only for its final lead-indicator section. So: start NB1 first; once `nb1_weekly_order_volume.parquet` lands, NB2 can launch in parallel as a subagent while NB1 finishes its forecasting + streaming-bonus sections. NB3 waits for both.
-
-## 3. NB1 — `01_demand_forecasting.ipynb`
-Sections I intend to write (in order):
-1. Boot + JAVA_HOME + `get_spark()`.
-2. RDD warm-up: `sc.textFile('data/olist_orders_dataset.csv')` → map/filter/reduceByKey daily-order count → DF with explicit schema. Rubric line #1.
-3. Typed loads via `loaders.load_*`. Row-count logs. Filter non-delivered; log drops to `decisions_log.md`.
-4. `geo_centroids` build + persist (if not already present).
-5. Order-line join (orders ⋈ order_items ⋈ broadcast(sellers) ⋈ broadcast(products)) → `cache()`. One hot DF.
-6. SparkSQL: register temp view `order_lines`; run ≥3 queries (top sellers by revenue; weekly volume per seller; late-delivery rate by state).
-7. Weekly aggregation → write `nb1_weekly_order_volume.parquet` **early** so NB2 can start.
-8. Feature Pipeline: lag-1, lag-4, rolling 4-week mean via Window, calendar features, `VectorAssembler`.
-9. Models: `GBTRegressor` + `RandomForestRegressor` with `CrossValidator(folds=3)` + `RegressionEvaluator('rmse')`. Compare RMSE.
-10. Per-seller forecast-uplift % (predicted next-4w vs trailing-4w mean) + avg delay days + delay_risk_flag → write `nb1_seller_demand_scores.parquet`.
-11. **Bonus** streaming: `readStream` from a tiny file-source directory mimicking new orders; 10-min windowed count. Only if steps 1–10 green.
-12. `unpersist()` before final writes.
-
-## 4. NB2 — `02_sentiment_analysis.ipynb`
-1. Boot, loads, filter reviews with non-null `review_comment_message` (log drops).
-2. Label: `score ≥ 4` positive, `score ≤ 2` negative, drop 3s (or keep as neutral third class — decide by class balance, log choice).
-3. SparkSQL join: temp view `reviews_with_seller` via orders ⋈ order_items ⋈ reviews. `cache()`.
-4. NLP Pipeline: `Tokenizer → StopWordsRemover(stopwords=Portuguese) → HashingTF → IDF → LogisticRegression`. AUC via `BinaryClassificationEvaluator`.
-5. PyTorch LSTM + justification markdown (per Hard Rule): why PyTorch, Spark alternative = `spark-nlp`, why acceptable (~40k reviews fits in RAM). Tokenize → integer-encode → `DataLoader` → 1-layer LSTM → sigmoid. Report test AUC, compare to LogReg baseline.
-6. Weekly rolling sentiment per seller via Window (`rangeBetween` on week index). Write `nb2_seller_sentiment_scores.parquet` columns: `seller_id, avg_sentiment_score, sentiment_trend_6wk, pct_negative_reviews, sentiment_declining`.
-7. Lead-indicator analysis: join `nb1_weekly_order_volume.parquet`; cross-correlate weekly sentiment slope vs. weekly volume slope at lags 0–8 weeks; report peak-correlation lag. Inline chart (small aggregated DF only).
-8. `unpersist()` before writes.
-
-## 5. NB3 — `03_supply_network_graph.ipynb`
-1. Boot with `get_spark(with_graphframes=True)`.
-2. Vertices: union of distinct `seller_id` and `customer_unique_id`; add a `type` column.
-3. Edges: `order_items` ⋈ `orders` ⋈ `customers` → `(seller_id, customer_unique_id)` with edge weight = count.
-4. `GraphFrame(v, e)`; degree analysis (in/out).
-5. PageRank (`resetProbability=0.15, maxIter=10`). Write top-50 table.
-6. Connected components → `is_isolated = (component size == 1)`.
-7. Motif `(a)-[e1]->(c)<-[e2]-(b)` filter `a.id != b.id` to find seller pairs sharing customers.
-8. BFS: for each top-10 PageRank seller, `bfs(from=that seller, to="type='seller' AND pagerank > threshold", maxPathLength=3)` → backup_seller_id (first hit other than self).
-9. High-delay subgraph: edges where the underlying orders' avg delay > 5 days → re-run PageRank on that subgraph; store as `network_risk_score`.
-10. Write `nb3_seller_network_scores.parquet`: `seller_id, pagerank_score, in_degree, is_isolated, backup_seller_id, network_risk_score`.
-
-## 6. Convergence (final NB3 section)
-Inner-join the 3 parquets on `seller_id`. Min-max normalise each of {demand_uplift_pct, sentiment_decline_flag_weighted, network_risk_score}; single-row aggregations flagged with a comment. `risk_score = 0.35·demand + 0.35·sentiment + 0.30·network`. Classify CRITICAL > 0.75, WARNING, SAFE < 0.40. Write `outputs/seller_risk_index.parquet`. Then `toPandas()` on top-50 only (flagged) for:
-- Chart 1: demand × sentiment quadrant, bubble = pagerank.
-- Chart 2: state bar chart of mean risk_score.
-
-## 7. Dataset choices logged up-front
-- Filter to delivered orders only (drop rows where `order_delivered_customer_date IS NULL`). Log row counts in notebook + `decisions_log.md`.
-- Keep neutral (score=3) reviews as their own class **or** drop them — decide after checking class balance (logged).
-- `customer_unique_id` is the person-level key everywhere.
-
-## 8. Parallelisation
-After NB1 step 7 (weekly volume parquet written), spawn NB2 as a subagent (`general-purpose` or `Explore` — likely general-purpose for write-heavy work). NB1 continues its forecasting + bonus sections. NB3 waits for both.
-
-## 9. Risks / watch items
-- Reviews are Portuguese — confirm `StopWordsRemover.loadDefaultStopWords('portuguese')` is available in PySpark 3.5 (it is).
-- GraphFrames motif finder is JVM-heavy; may need `spark.driver.memory=4g` config bump for motifs.
-- PyTorch LSTM on CPU: cap vocab at 20k + max seq length 128 to keep training <5 min.
-- NB1 streaming bonus is *only* attempted after the three required parquets exist.
-
-## 10. Deliverable check (per grading_checklist.md)
-All six output parquets, all rubric lines hit, every cell re-run via `submission/build_zip.sh` before zipping. Presentation PDF is human-produced from these outputs.
+**Expected side effect (authorised by this plan):** headline metrics will move materially (>1%) —
+risk-band counts especially. CLAUDE.md §7 normally requires stop-and-ask on >1% drift; this plan is
+that authorisation. New values get written back to §7 in Phase 6.
 
 ---
-**Awaiting approval before writing any notebook code.**
+
+## Phase 0 — Quick correctness fixes (no recompute)
+Low-risk; only a notebook rebuild, no parquet recompute.
+
+1. **B — GBT narrative.** `scripts/build_main.py` ~L477 and ~L543-544: replace hardcoded "RF wins / RF is selected" with text interpolated from `best_name` / `metrics_pd` so prose tracks the dynamically-rendered table and can't drift again.
+2. **G — stale header.** Delete "Sections 3–7 are added in subsequent commits; this commit lands §1 + §2 only." from `build_main.py:1-17`.
+3. Rebuild notebook (`scripts/build_main.py`), re-execute affected cells, eyeball.
+4. Commit: `fix(nb): GBT-correct model-selection narrative + drop stale header`.
+
+## Phase 1 — RDD: make it load-bearing + name lazy evaluation
+Addresses C and E. Recomputes demand chain.
+
+1. **Move the inlined reconciliation into `src`.** New `demand.rdd_vs_typed_reconciliation(spark)` holding the `build_main.py:371-388` chain. Notebook cell shrinks to import + call + `.show()`.
+2. **Make the RDD path produce a consumed result.** Extend `demand.rdd_daily_order_count` (or a sibling) so the RDD pass also counts **malformed/unparseable rows** (lines failing the field-count check) and returns that tally. Wire the tally into the §2 cleaning-audit table so the RDD output is genuinely used downstream. Keep the fragile-`split` caveat as one honest markdown line ("manual parse for the RDD demo; production reads via the typed loader").
+3. **E — lazy-eval cell.** One markdown + ~3-line code cell near the RDD section: build a transformation chain (no job), fire an action, call out transformation-vs-action + lazy DAG (`.explain()` / printed note). Add `check_lazy_eval_documented` to `checks.py`, register in `CHECKS`.
+4. Rebuild + re-execute demand section; confirm cache reran demand and downstream behaved.
+5. Commit: `feat(demand): load-bearing RDD malformed-row count + lazy-eval callout; move reconciliation to src`.
+
+## Phase 2 — Outlier treatment
+Addresses D. Recomputes demand + risk index.
+
+1. **Winsorise `delivery_delay_days`** in `demand.py` feature prep using `approxQuantile` bounds (clip ~[p1, p99]); record clipped-row count. Reuses the `approxQuantile` already computed for EDA — now it drives a transform.
+2. **Stabilise the normalisation range** in `convergence.compute_normalisation_ranges`: compute min/max on the winsorised columns (or clamp at percentile bounds) so one extreme seller no longer compresses everyone's `demand_norm`.
+3. Log to `decisions_log.md`: bounds, rows clipped, rationale.
+4. Rebuild + re-execute; commit: `feat(preprocess): winsorise delivery delay; stabilise risk normalisation range`.
+
+## Phase 3 — Graph rework: add graph-unique signal (core of the pass)
+Addresses A. Recomputes the network module.
+
+Keep every existing op (degree, bipartite PageRank, CC, motif, BFS, delayed-subgraph PageRank) — they
+satisfy `check_graphframe_ops ≥ 6` and rubric breadth. **Add a seller↔seller co-customer projection
+layer**, where the genuinely graph-unique value lives.
+
+1. **Co-customer projection graph** (`network.build_cocustomer_graph`): vertices = sellers (~3k), edges from the cached `network_motifs.parquet` `(seller_a, seller_b, n_shared_customers)`, thresholded `n_shared_customers ≥ 2`. Small → cheap.
+2. **Co-customer centrality** (`network.compute_cocustomer_centrality`): PageRank weighted by shared-customer count on the projection = "embeddedness in the substitution network". **Report `corr(cocustomer_centrality, in_degree)` in the notebook to prove it is not a degree proxy.**
+3. **Community detection** (`network.compute_substitution_communities`): `gf.labelPropagation(maxIter=5)` on the projection → substitution communities. Replaces the dead "0 isolated sellers" CC finding with informative segmentation. Add `community_id` + community size.
+4. **Backup-for-ALL-sellers** (`network.compute_backup_map`): every seller's backup = co-customer partner with max `n_shared_customers`; `backup_strength` = that count. Persist for all sellers (not just top-10 hubs) — makes the motif **load-bearing**. Keep the top-10 BFS hop-count as the "how far is the nearest substitute" traversal finding.
+5. **Substitutability-deficit feature:** high `in_degree` (failure impact) × low `backup_strength`/few partners = single point of failure. True degree×neighbourhood interaction, correlates poorly with raw degree — the new graph-unique risk signal.
+6. **Extend `nb3_seller_network_scores.parquet`:** add `backup_seller_id` (all sellers), `backup_strength`, `cocustomer_centrality`, `n_cocustomer_partners`, `community_id`, `substitutability_deficit`. Existing columns retained.
+7. New safety-log IDs for any small `.toPandas()`/collect feeding the new viz; register in `safety.py` + `big_data_safety_log.md`.
+8. Commit: `feat(network): co-customer projection — centrality, communities, backup-for-all, substitutability deficit`.
+
+## Phase 4 — Convergence integration
+Addresses A (decision-impact half). Recomputes risk index.
+
+**Open decision (recommendation in bold):** how the network axis enters the risk score.
+- **Recommended: redefine `network_norm` as a 50/50 blend of contagion (existing delayed-PageRank `network_risk_score`) and the new `substitutability_deficit`** — graph-unique, non-degenerate across the population (fixes the 68%-zero problem), and genuinely distinct from demand's delay signal.
+- Alt A: keep `network_risk_score` as-is, add `substitutability_deficit` only as a recommendation gate (smaller change, weaker fix).
+- Alt B: replace contagion entirely with deficit (cleanest story, drops the delayed-subgraph link).
+
+1. Implement the chosen network-axis definition in `convergence.build_seller_risk_index`; carry `backup_seller_id`, `backup_strength`, `community_id`, `substitutability_deficit` into `seller_risk_index.parquet`.
+2. **Backup-gated recommendation:** flag "CRITICAL/WARNING seller with weak/no backup (`backup_strength` below threshold) → escalate; else route demand to backup". Surface in §7 — converts the graph insight into an action.
+3. Commit: `feat(convergence): graph-unique network axis + backup-gated recommendations`.
+
+## Phase 5 — Notebook narrative, viz, checks, docs
+1. **§5 rewrite** in `build_main.py`: co-customer projection / centrality / community / substitutability narrative; **bipartite-PageRank≈degree honesty callout with the measured r**; reframe BFS/motif as load-bearing. Update §5 Key Takeaways and §6/§7 for the new network axis + backup recommendations.
+2. **viz.py helpers** (small-DF only): substitutability-deficit scatter (impact×backup), community-size bar, centrality-vs-degree scatter (the proof chart).
+3. **checks.py:** add `check_cocustomer_graph`, `check_outlier_treatment`, `check_lazy_eval_documented`; register in `CHECKS`. Update `check_parquet_artefacts` if paths change.
+4. **Docs:** CLAUDE.md §5 (graph contract), §7 (new `nb3` + `seller_risk_index` schemas), §8 + §8.1 (graph + new checks). Append `decisions_log.md` per phase. Tick `grading_checklist.md`.
+5. Commit: `docs+nb: graph-unique narrative, proof charts, new compliance checks`.
+
+## Phase 6 — Full rerun, reconcile, verify
+1. `./run.sh` end-to-end (clean `outputs/_gf_checkpoints/` first). Expect network + convergence + demand to recompute.
+2. **Reconcile metrics into CLAUDE.md §7 and `big_data_safety_log.md`:** new risk-band counts, new `corr` values, and **fix F** (LSTM AUC → actual executed value).
+3. `checks.run_all(spark)` all green. `scripts/assert_notebook_outputs.py` — every cell has output.
+4. `./submission/build_zip.sh` up to the assert step (dry run).
+5. Final commit + `git push origin main`.
+
+---
+
+## Risk / rollback
+- Each phase is its own commit → revert granularly.
+- `outputs/*.parquet` committed; `diff_parquets.py` compares pre/post where schemas are stable.
+- Heaviest risk = Phase 3 `labelPropagation` cost — mitigated by running on the ~3k-seller projection (not the 100k bipartite graph) + edge-thresholding.
+- If `labelPropagation`/projection misbehaves after two fix attempts → stop and ask (§9).
+
+## Open decisions for sign-off
+1. **Network-axis definition (Phase 4):** approve the recommended 50/50 deficit+contagion blend, or pick Alt A / Alt B?
+2. **Scope/sequencing:** all phases now, or land 0–2 first and review before the Phase 3 graph rework?

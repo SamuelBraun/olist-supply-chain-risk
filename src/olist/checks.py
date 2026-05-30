@@ -233,6 +233,45 @@ def check_safety_log_consistency() -> CheckResult:
     )
 
 
+def check_lazy_eval_documented() -> CheckResult:
+    _, md = _nb_cells("main.ipynb")
+    blob = "\n".join(md).lower()
+    ok = (
+        ("transformation" in blob and "action" in blob)
+        and ("lazy" in blob)
+    )
+    return CheckResult(
+        "Lazy evaluation / transformation-vs-action documented",
+        ok,
+        "found in main.ipynb markdown" if ok else "missing lazy-eval callout",
+    )
+
+
+def check_outlier_treatment() -> CheckResult:
+    src = _src(demand)
+    has_winsor = "def winsorize" in src
+    has_quantile = "approxQuantile" in src
+    ok = has_winsor and has_quantile
+    return CheckResult(
+        "Outlier treatment (winsorise via approxQuantile)",
+        ok,
+        f"winsorize={has_winsor}, approxQuantile={has_quantile} (demand.py)",
+    )
+
+
+def check_cocustomer_graph() -> CheckResult:
+    src = _src(network)
+    has_proj = "build_cocustomer_edges" in src
+    has_lp = ".labelPropagation(" in src
+    has_deficit = "substitutability_deficit" in src
+    ok = has_proj and has_lp and has_deficit
+    return CheckResult(
+        "Co-customer projection (centrality + communities + deficit)",
+        ok,
+        f"projection={has_proj}, labelPropagation={has_lp}, deficit={has_deficit}",
+    )
+
+
 def check_parquet_artefacts() -> CheckResult:
     expected = [
         "outputs/geo_centroids.parquet",
@@ -266,6 +305,9 @@ CHECKS: tuple[Callable[[], CheckResult], ...] = (
     check_graphframe_ops,
     check_window_used,
     check_approx_eda,
+    check_lazy_eval_documented,
+    check_outlier_treatment,
+    check_cocustomer_graph,
     check_markdown_ratio,
     check_safety_log_consistency,
     check_parquet_artefacts,

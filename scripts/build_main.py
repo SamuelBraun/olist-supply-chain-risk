@@ -12,8 +12,6 @@ Section layout:
   5. Sub-Analysis 3 — Network Analysis
   6. Cross-Analysis Synthesis
   7. Conclusions & Limitations
-
-Sections 3–7 are added in subsequent commits; this commit lands §1 + §2 only.
 """
 
 from __future__ import annotations
@@ -98,7 +96,7 @@ To answer the operational question above, we decompose it into three independent
 |---|---|---|---|
 | 1 | **Demand pressure & delivery risk.** Is this seller's order volume rising or falling, and are they shipping on time? | PySpark MLlib regressors (GBT vs RandomForest) under 3-fold CV on weekly volume features | `forecast_uplift_pct`, `avg_delay_days` |
 | 2 | **Customer sentiment trend.** Are reviews getting more positive or negative for this seller, and does sentiment lead volume? | TF-IDF + Logistic Regression (Spark ML Pipeline) + PyTorch LSTM, plus 6-week rolling Window aggregation | `avg_sentiment_score`, `sentiment_trend_6wk` |
-| 3 | **Network centrality & contagion.** Is this seller a structural hub whose failure would disrupt many customers? | GraphFrames PageRank + connected components + motif `(a)→c←(b)` + BFS + delayed-subgraph PageRank | `pagerank_score`, `network_risk_score` |
+| 3 | **Network criticality & substitutability.** Is this seller a structural single-point-of-failure whose demand no one else could absorb? | GraphFrames on the bipartite graph (PageRank, CC, motif, BFS, delayed subgraph) + a seller↔seller co-customer projection (centrality, label-propagation communities, backup map) | `substitutability_deficit`, `backup_seller_id`, `network_risk_score` |
 
 ### 1.3 Methodology, why PySpark
 
@@ -351,9 +349,10 @@ md("""### 3.4 Preprocessing. Typed loads, RDD warm-up, SparkSQL temp views
 
 This subsection demonstrates three PySpark primitives on the demand data:
 
-1. **RDD chain** (`textFile → filter → map → reduceByKey → typed DataFrame`), the lowest-level Spark primitive, used to ingest the raw orders CSV without any DataFrame infrastructure.
-2. **Typed loads via `loaders.load_*`** — explicit `StructType` schemas, no `inferSchema` (would force a redundant full-file pass at scale).
-3. **SparkSQL temp-view queries**: three queries register `order_lines` as a temp view and answer revenue / volume / late-rate questions in plain SQL.""")
+1. **RDD chain** (`textFile → filter → map → reduceByKey → typed DataFrame`), the lowest-level Spark primitive, used to ingest the raw orders CSV without any DataFrame infrastructure — and to measure the malformed-row count the typed loader hides.
+2. **Transformations vs. actions** — the lazy DAG only runs when an action fires.
+3. **Typed loads via `loaders.load_*`** — explicit `StructType` schemas, no `inferSchema` (would force a redundant full-file pass at scale).
+4. **SparkSQL temp-view queries**: three queries register `order_lines` as a temp view and answer revenue / volume / late-rate questions in plain SQL.""")
 
 code('''from olist.pipeline.demand import rdd_daily_order_count
 print(inspect.getsource(rdd_daily_order_count))
@@ -364,27 +363,25 @@ print(f"RDD-derived daily rows: {daily_rdd_df.count():,}")
 daily_rdd_df.orderBy("purchase_date").limit(5).show()
 ''')
 
-# Integrity check: compare the RDD path against the typed-loader path on the
-# same aggregation. Any delta is a real data-quality finding (rows the RDD
-# chain dropped because the timestamp wasn't parseable as text), not just
-# rubric ornament.
-code('''from olist.loaders import load_orders
+md("""**Transformations vs. actions (lazy evaluation).** The RDD chain above (`textFile → filter → map → reduceByKey`) builds *nothing* when defined — Spark records a lineage DAG and waits. Only an **action** (`count`, `collect`, the `createDataFrame` materialisation) forces the cluster to run it. The cell below makes the split explicit: defining a `.filter()` returns instantly; the `.count()` is what triggers the job.""")
 
-typed_daily = (
-    load_orders(spark)
-    .withColumn("purchase_date", F.to_date("order_purchase_timestamp"))
-    .groupBy("purchase_date")
-    .agg(F.count("*").alias("typed_n"))
-)
-joined = daily_rdd_df.join(typed_daily, "purchase_date", "full_outer")
-mismatch = joined.filter(
-    F.coalesce(F.col("n"), F.lit(0)) != F.coalesce(F.col("typed_n"), F.lit(0))
-)
-rdd_rows = daily_rdd_df.agg(F.sum("n")).first()[0] or 0
-typed_rows = typed_daily.agg(F.sum("typed_n")).first()[0] or 0
-print(f"RDD path total orders:    {rdd_rows:,}")
-print(f"Typed path total orders:  {typed_rows:,}")
-print(f"Days where the two paths disagree: {mismatch.count()}  (delta = {rdd_rows - typed_rows:+,} rows)")
+code('''# transformations are lazy — defining this chain submits no Spark job
+lazy_chain = daily_rdd_df.filter(F.col("order_count") > 1).select("purchase_date", "order_count")
+print("transformation defined, still no job:", type(lazy_chain).__name__)
+
+# an action forces the deferred DAG to execute
+print("days with >1 order:", lazy_chain.count())   # <- the action
+lazy_chain.explain(mode="simple")                    # the plan Spark deferred until now
+''')
+
+# RDD strict-parse vs typed-loader reconciliation — moved out of the notebook
+# into demand.py per the "no transformation logic in cells" architecture rule.
+code('''from olist.pipeline.demand import rdd_vs_typed_reconciliation
+
+# malformed_rows is the real finding: raw rows the typed loader silently
+# absorbs via null-tolerant casts but the RDD's strict text parse rejects.
+reconciliation = rdd_vs_typed_reconciliation(spark)
+reconciliation.show(truncate=False)
 ''')
 
 code('''# Three SparkSQL queries on a temp view (the SQL text is printed inline)
@@ -394,7 +391,7 @@ for name, (sql, result) in queries.items():
     result.show(truncate=False)
 ''')
 
-md("""**Plain read.** The RDD-vs-typed delta above tells us how many raw rows the typed loader silently absorbs (null-tolerant casts vs. the RDD chain's strict text parsing). A non-zero delta is an honest data-quality finding, not a bug; the typed path is what the rest of the notebook builds on. The three SparkSQL queries then surface the demand picture in a form a SQL-fluent stakeholder could reproduce in any tool.""")
+md("""**Plain read.** `malformed_rows` counts the raw order rows the RDD's strict text parse could not turn into a dated order — exactly the rows the typed loader hides behind null-tolerant casts. It is an honest data-quality figure, not a bug, and it is the one number the RDD pass produces that the DataFrame path cannot. The typed path is what the rest of the notebook builds on. The three SparkSQL queries above then surface the demand picture in a form a SQL-fluent stakeholder could reproduce in any tool.""")
 
 
 md("""### 3.5 Feature engineering. Window-based lags + rolling, ML Pipeline
@@ -474,7 +471,7 @@ viz.styled_topn_table(
 )
 ''')
 
-md("""**What this means.** Both regressors land at nearly identical test RMSE (~5 orders/week). RF wins by a hair and is faster to re-score, so it ships. The closeness implies the choice of estimator is not the bottleneck. Additional signal would have to come from new features, not a different model family.""")
+md("""**What this means.** Both regressors land at nearly identical test RMSE (~5 orders/week). The pipeline selects whichever has the lower test RMSE automatically — in the current run that is **GBT** (the table above marks the winner with a ✓). The closeness implies the choice of estimator is not the bottleneck. Additional signal would have to come from new features, not a different model family.""")
 
 
 md("""#### 3.7.2 Feature importance""")
@@ -540,7 +537,7 @@ md("""**Takeaway.** These are the sellers with the strongest predicted growth. T
 
 md("""### 🎯 Sub-Analysis 1. Key Takeaways
 
-- **The forecasting signal works.** Both GBT and RF land at ~5 orders/week test RMSE, well below the magnitude of an actionable demand swing. RF is selected.
+- **The forecasting signal works.** Both GBT and RF land at ~5 orders/week test RMSE, well below the magnitude of an actionable demand swing. GBT is selected (lower test RMSE; the §3.7.1 table marks the winner).
 - **The model is interpretable.** Lagged volume + 4-week rolling mean drive most of the prediction; this matches the operational intuition and is auditable.
 - **Two per-seller signals reach the deployment parquet.** `forecast_uplift_pct` (growth) and `avg_delay_days` / `delay_risk_flag` (delivery risk), orthogonal axes that combine into the demand component of the §6 risk index.
 - **Geographic concentration of late deliveries is real.** A handful of states carry the late-rate tail; the §7 recommendations include a regional-targeting sweep for delivery-risk interventions.
@@ -796,7 +793,7 @@ md("""### 🎯 Sub-Analysis 2. Key Takeaways
 # ===========================================================================
 md("""## 5. Sub-Analysis 3. Supply-Network Graph
 
-The third and final sub-analysis. Same eight-substep skeleton: framing → EDA → cleaning → preprocessing → feature engineering → modelling → evaluation → interpretation, closing with **Key Takeaways**. The PySpark primitive on display here is **GraphFrames**, six distinct algorithms (PageRank, connected components, motif-finding, BFS, induced subgraph, edge weighting).""")
+The third and final sub-analysis. Same eight-substep skeleton: framing → EDA → cleaning → preprocessing → feature engineering → modelling → evaluation → interpretation, closing with **Key Takeaways**. The PySpark primitive on display here is **GraphFrames**. We run the full battery on the bipartite customer↔seller graph (PageRank, connected components, motif-finding, BFS, induced subgraph), then **project onto a seller↔seller co-customer graph** where the genuinely graph-unique signals live — a substitutability deficit and label-propagation communities the tabular analyses cannot produce.""")
 
 
 md("""### 5.1 Problem framing
@@ -804,13 +801,14 @@ md("""### 5.1 Problem framing
 **Sub-research question.** *Which sellers are structural single-points-of-failure. I.e. Their disappearance would disrupt the most customers, and who could absorb their demand if they failed?*
 
 **Success criteria.**
-- A **PageRank score per seller** that ranks structural importance in the bidirectional customer-seller graph.
-- A **shared-customer motif map** that identifies natural backup-seller pairs.
-- A **per-seed BFS** that returns the nearest alternative seller for each top-PageRank seller.
-- A **delayed-subgraph PageRank** isolating sellers central to the *late-shipping* part of the network — the contagion-risk signal.
+- A **substitutability deficit per seller** — high impact (many customers) with few substitute sellers = a structural single-point-of-failure. This is the signal that reaches the §6 risk index.
+- A **backup seller for every seller** (not just the hubs), so the recommendation engine has an "if X fails, route to Y" lookup.
+- **Substitution communities** — clusters of mutually-substitutable sellers, via label propagation on the projected graph.
+- A **delayed-subgraph PageRank** isolating sellers central to the *late-shipping* part of the network — the contagion-risk signal, blended 50/50 with the deficit into the network axis.
 
 **Method-choice rationale.**
 - **GraphFrames over `networkx`.** GraphFrames runs on the JVM, scales horizontally, and survives a 100× scale-up unchanged. `networkx` would be 10× slower at this size and unusable at 1 M vertices.
+- **Project to a seller↔seller graph for the risk signal.** On the bipartite graph with unit-ish edges, PageRank degenerates to a degree proxy (we show it tracks in-degree at r≈1.0 in §5.5.4). Centrality, communities, and the deficit are computed on the co-customer projection, where they measure substitution structure rather than raw customer count.
 - **`connectedComponents(algorithm="graphx")` over the default message-passing variant.** The default OOM'd the JVM heap on this graph at 6 GB driver memory (logged in `decisions_log.md` 2026-04-22 NB3 entry); GraphX CC is more memory-efficient and completes in seconds.
 - **Bidirectional edges (`purchase` + `serves`).** Required so PageRank flows both ways and BFS can reach other sellers via shared customers.""")
 
@@ -884,7 +882,7 @@ print(f"isolated sellers:           {isolated_sellers.count():,}")
 print(f"distinct components total:  {cc_with_size.select('component').distinct().count():,}")
 ''')
 
-md("""**So what?** A seller with `component_size == 1` is *truly* isolated. No shared customers with any other seller. Every isolated seller is a structural single-point-of-failure. The component-size distribution is rendered as a chart in §5.7.3.""")
+md("""**So what?** A seller with `component_size == 1` would be *truly* isolated — no shared customers with anyone. In practice the bipartite graph is one giant component with **0 isolated sellers**, so this is a sanity check, not a finding. The substitution question it *can't* answer — "which sellers can actually replace each other?" — is what the co-customer projection in §5.5.4 (label-propagation communities) handles instead. The component-size distribution is rendered in §5.7.3.""")
 
 
 md("""#### 5.5.3 Motif `(a)→c←(b)`. Shared-customer seller pairs
@@ -895,6 +893,82 @@ code('''from olist.pipeline.network import compute_shared_customer_motifs
 
 shared_customer_pairs = compute_shared_customer_motifs(spark)
 print(f"distinct seller-pairs sharing ≥1 customer: {shared_customer_pairs.count():,}")
+''')
+
+
+md("""#### 5.5.4 Co-customer projection. Centrality, communities, and a degree-proxy check
+
+The bipartite graph has a known weakness: with unit-ish edges, **PageRank on it degenerates to a degree proxy** — a seller's score is essentially "how many customers it served." To get a signal that is genuinely *graph-native* we project onto a **seller↔seller graph**: two sellers are linked when they share customers (edge weight = shared-customer count, kept at ≥2 to drop coincidences), built straight from the §5.5.3 motif output.""")
+
+code('''from olist.pipeline.network import (
+    build_cocustomer_edges, compute_cocustomer_centrality,
+    compute_substitution_communities, compute_backup_map,
+    build_seller_network_scores,
+)
+
+cocustomer_edges = build_cocustomer_edges(spark)
+print(f"co-customer edges (>=2 shared, both directions): {cocustomer_edges.count():,}")
+
+cocustomer_centrality = compute_cocustomer_centrality(spark)   # PageRank on the projection
+communities = compute_substitution_communities(spark)          # label propagation
+backup_map = compute_backup_map(spark)                         # backup seller for ALL sellers
+print(f"sellers in projection: {cocustomer_centrality.count():,}  |  "
+      f"communities: {communities.select('community_id').distinct().count():,}  |  "
+      f"sellers with a backup: {backup_map.count():,}")
+''')
+
+md("""**Is the graph just re-deriving degree?** The honest test: correlate each network signal against raw seller in-degree (customer count). If a signal tracks degree at r≈1, it carries nothing a `groupBy` could not.""")
+
+code('''net_scores = build_seller_network_scores(spark)  # assembled per-seller table
+
+# BIG-DATA-SAFETY-ESCAPE: SMALL_SUMMARY_COLLECT — 4 scalar correlations
+corr_rows = [
+    (col, float(net_scores.stat.corr("in_degree", col)))
+    for col in ["pagerank_score", "cocustomer_centrality",
+                "network_risk_score", "substitutability_deficit"]
+]
+corr_pd = pd.DataFrame(corr_rows, columns=["signal", "corr_with_in_degree"])
+viz.styled_topn_table(
+    corr_pd,
+    bar_cols=["corr_with_in_degree"],
+    fmt={"corr_with_in_degree": "{:+.4f}"},
+    title="Correlation of each network signal with raw in-degree",
+)
+''')
+
+md("""**Read this as.** Bipartite `pagerank_score` correlates with in-degree at ~1.0 — it *is* a degree proxy, kept only as a sanity ranking. `substitutability_deficit` correlates far more weakly (~0.4): a genuine degree×neighbourhood interaction (high impact AND few substitutes) that no single `groupBy` produces. That deficit is the graph-unique signal feeding the §6 network axis. The scatter makes the non-relationship visible — high-degree sellers spread across the whole centrality range rather than sitting on a line.""")
+
+code('''# BIG-DATA-SAFETY-ESCAPE: PLOTLY_STATIC_VIZ — 1000-row sample for the scatter
+proof_pd = (
+    net_scores.select("in_degree", "cocustomer_centrality",
+                      "substitutability_deficit", "n_cocustomer_partners")
+    .orderBy(F.col("in_degree").desc())
+    .limit(1000)
+    .toPandas()
+)
+viz.quadrant_scatter(
+    proof_pd,
+    x="in_degree", y="cocustomer_centrality",
+    size="substitutability_deficit", color="substitutability_deficit",
+    title="Co-customer centrality vs in-degree (bubble = substitutability deficit)",
+    xlabel="in-degree (customers served)", ylabel="co-customer centrality",
+)
+''')
+
+md("""**Substitution communities.** Label propagation on the projection groups sellers into communities that can absorb each other's demand — the actionable replacement for the connected-components result. The largest communities are the densest substitution clusters; a CRITICAL seller alone in a small community is far harder to back up than one in a large cluster.""")
+
+code('''# BIG-DATA-SAFETY-ESCAPE: PLOTLY_STATIC_VIZ — top-10 community sizes
+top_comm_pd = (
+    communities.groupBy("community_id").agg(F.count("*").alias("n_sellers"))
+    .orderBy(F.col("n_sellers").desc())
+    .limit(10)
+    .toPandas()
+)
+top_comm_pd["community_id"] = top_comm_pd["community_id"].astype(str)
+viz.state_bar(
+    top_comm_pd, value_col="n_sellers", label_col="community_id",
+    title="Top-10 substitution communities by size", sort="desc", color_by_value=True,
+)
 ''')
 
 
@@ -962,7 +1036,7 @@ viz.styled_topn_table(
 )
 ''')
 
-md("""**Operational read.** Substitutability map. These pairs are the strongest natural backup relationships in the marketplace. If seller A fails, seller B already serves many of A's customers and could absorb the demand with minimal customer friction. Operations should formalise dual-sourcing for the top-N pairs.""")
+md("""**Operational read.** Substitutability map. These pairs are the strongest natural backup relationships in the marketplace. If seller A fails, seller B already serves many of A's customers and could absorb the demand with minimal friction. §5.5.4's `compute_backup_map` turns this into a per-seller lookup for *every* seller (not just the top-20 pairs shown here), and that `backup_seller_id` / `backup_strength` reaches the risk index, where a non-SAFE seller with no backup is flagged for escalation.""")
 
 
 md("""#### 5.7.3 Component-size distribution""")
@@ -1024,12 +1098,12 @@ md("""**Read this as:** Concentration at hop count 1 means hubs are well-substit
 
 md("""### 5.8 Interpretation. Per-seller scores + deployment view
 
-The deployable parquet `outputs/nb3_seller_network_scores.parquet` carries `pagerank_score`, `in_degree`, `is_isolated`, `backup_seller_id`, `network_risk_score` (= delayed-subgraph PageRank).""")
+The deployable parquet `outputs/nb3_seller_network_scores.parquet` carries `pagerank_score`, `in_degree`, `is_isolated`, `cocustomer_centrality`, `community_id`, `backup_seller_id`, `backup_strength`, `n_cocustomer_partners`, `substitutability_deficit`, and `network_risk_score` (= delayed-subgraph PageRank). The deficit and the delayed-subgraph contagion are the two halves the §6 network axis blends.""")
 
-code('''from olist.pipeline.network import build_seller_network_scores
-
-seller_network_scores = build_seller_network_scores(spark)
+code('''seller_network_scores = build_seller_network_scores(spark)
 print(f"seller_network_scores rows: {seller_network_scores.count():,}")
+print(f"single-point-of-failure sellers (no backup): "
+      f"{seller_network_scores.filter(F.col('backup_strength') == 0).count():,}")
 seller_network_scores.groupBy("is_isolated").agg(F.count("*").alias("n")).orderBy("is_isolated").show()
 ''')
 
@@ -1060,12 +1134,12 @@ md("""**The point.** These ten sellers are the **contagion hubs**: structurally 
 
 md("""### 🎯 Sub-Analysis 3. Key Takeaways
 
-- **One giant component dominates.** The marketplace is well-connected; recommendation-engine cross-sell between sellers is structurally feasible.
-- **PageRank surfaces ~10 anchor sellers.** Their failure would cascade widely, they are intervention candidates regardless of demand or sentiment scores.
-- **The shared-customer motif map identifies natural backups.** The top-20 pairs are the formal candidates for dual-sourcing agreements.
-- **BFS provides a 1:1 backup mapping for each top-PageRank seller.** Operationally usable as a pre-cached "if X fails, route to Y" lookup.
-- **Delayed-subgraph PageRank flags the contagion-risk tail.** Sellers central to the late-shipping subgraph are the operational priorities for the §7 recommendations.
-- **Honest limitation.** The graph treats every customer-seller interaction as equal weight in the bidirectional edges (count of items only, not revenue); a value-weighted edge could change which sellers count as *structurally important*.""")
+- **Bipartite PageRank is a degree proxy — and we say so.** It tracks raw in-degree at r≈1.0, so we keep it only as a sanity ranking. The graph-unique value comes from the seller↔seller projection, not from centrality on the bipartite graph.
+- **Substitutability deficit is the real signal.** High impact with few substitutes = single-point-of-failure. It correlates with in-degree at only ~0.4, so it is *not* recoverable from a `groupBy`, and it is what feeds the §6 network axis (blended 50/50 with delayed-subgraph contagion).
+- **Backup seller for every seller.** The motif map is operationalised into a per-seller `backup_seller_id` + `backup_strength` lookup; a non-SAFE seller with no backup is flagged `escalate_no_backup`.
+- **Substitution communities replace the dead isolation finding.** Label propagation surfaces clusters that can absorb each other's demand — actionable where connected-components (one giant component) was not.
+- **Delayed-subgraph PageRank flags the contagion-risk tail.** Sellers central to the late-shipping subgraph are operational priorities for §7.
+- **Honest limitation.** Edges are item-count weighted, not revenue weighted; a value-weighted projection could shift which sellers count as structurally critical.""")
 
 
 # ===========================================================================
@@ -1280,7 +1354,7 @@ Six prioritised actions grounded in the numbers above. Management-ready, no jarg
 
 3. **Geographic targeting for delivery-risk interventions.** The §3.2.1 late-rate state bar and the §6.4 state-mean-risk bar both surface the same handful of Brazilian states with above-mean late rates. Run a focused regional seller-health sweep there before the next quarterly review.
 
-4. **Formalise dual-sourcing for the top-10 PageRank sellers.** §5.7.2 (top-20 motifs) gives you the natural backup pairs; §5.6.1 (BFS backups) gives you a 1:1 backup mapping for each anchor seller. Both are pre-computed and ready for an operations-team handoff.
+4. **Escalate the single-points-of-failure first.** The risk index flags every non-SAFE seller that has *no* viable backup (`escalate_no_backup` — high substitutability deficit). These are the sellers whose failure the marketplace cannot absorb; they need a dual-sourcing agreement before anything else. For sellers that *do* have a backup, `backup_seller_id` is the pre-computed "if X fails, route to Y" target — ready for an operations-team handoff, and now covering every seller rather than just the top-10 hubs.
 
 5. **Don't stake intervention triggers on sentiment alone.** The §4.7.3 lead-indicator finding is honest: |ρ| ≈ 0.015, sentiment is a *confirming* signal alongside delay + network risk in the composite, not a *predictive* signal in isolation.
 

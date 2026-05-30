@@ -58,8 +58,10 @@ def rdd_daily_order_count(spark: SparkSession) -> DataFrame:
     split / filter / reduceByKey into a (date → order-count) pair, and rebuild
     a typed DataFrame with an explicit schema.
 
-    The returned DataFrame is only used for a sanity check against the typed
-    loader — downstream work reads the typed DataFrame via `loaders.load_orders`.
+    Feeds `rdd_vs_typed_reconciliation`, which derives the malformed-row count
+    surfaced in the §3 cleaning audit. Downstream forecasting still reads the
+    typed DataFrame via `loaders.load_orders` — the manual `split(',')` parse
+    here is for the RDD demo, not production ingestion.
     """
     data_dir = Path(__file__).resolve().parents[3] / "data"
     orders_csv = str(data_dir / "olist_orders_dataset.csv")
@@ -91,6 +93,74 @@ def rdd_daily_order_count(spark: SparkSession) -> DataFrame:
     return spark.createDataFrame(
         daily_pairs.map(lambda kv: (kv[0], int(kv[1]))), schema=schema
     )
+
+
+def rdd_vs_typed_reconciliation(spark: SparkSession) -> DataFrame:
+    """Cross-check the RDD daily-count path against the typed loader on the
+    same daily aggregation, and surface how many raw rows the RDD's strict
+    text parse rejected (empty / unparseable order_purchase_timestamp).
+
+    Returns a one-row summary: (raw_body_rows, rdd_counted_orders,
+    typed_counted_orders, rdd_minus_typed, malformed_rows, days_disagreeing).
+
+    `malformed_rows` is a real data-quality figure the typed loader hides
+    behind null-tolerant casts — the RDD pass is the only place we measure it,
+    so this output feeds the §3 cleaning audit instead of being thrown away.
+    """
+    daily_rdd = rdd_daily_order_count(spark)  # (purchase_date, order_count)
+    data_dir = Path(__file__).resolve().parents[3] / "data"
+    orders_csv = str(data_dir / "olist_orders_dataset.csv")
+    raw = spark.sparkContext.textFile(orders_csv)
+    header = raw.first()
+    raw_body_rows = raw.filter(lambda row: row != header).count()
+
+    rdd_counted = daily_rdd.agg(F.sum("order_count")).first()[0] or 0
+    malformed = int(raw_body_rows) - int(rdd_counted)
+
+    typed_daily = (
+        load_orders(spark)
+        .withColumn("purchase_date", F.to_date("order_purchase_timestamp"))
+        .groupBy("purchase_date")
+        .agg(F.count("*").alias("typed_n"))
+    )
+    typed_counted = typed_daily.agg(F.sum("typed_n")).first()[0] or 0
+    days_disagreeing = (
+        daily_rdd.join(typed_daily, "purchase_date", "full_outer")
+        .filter(
+            F.coalesce(F.col("order_count"), F.lit(0))
+            != F.coalesce(F.col("typed_n"), F.lit(0))
+        )
+        .count()
+    )
+    return spark.createDataFrame(
+        [(
+            int(raw_body_rows),
+            int(rdd_counted),
+            int(typed_counted),
+            int(rdd_counted) - int(typed_counted),
+            int(malformed),
+            int(days_disagreeing),
+        )],
+        schema=(
+            "raw_body_rows long, rdd_counted_orders long, "
+            "typed_counted_orders long, rdd_minus_typed long, "
+            "malformed_rows long, days_disagreeing long"
+        ),
+    )
+
+
+def winsorize(df: DataFrame, col: str, lower_q: float = 0.01, upper_q: float = 0.99):
+    """Clip `col` to its [lower_q, upper_q] approxQuantile bounds. Returns
+    (winsorised_df, lo, hi, n_clipped). Used to tame the delivery-delay tail
+    before it reaches the §6 min-max normalisation range.
+    """
+    lo, hi = df.approxQuantile(col, [lower_q, upper_q], 0.01)
+    n_clipped = df.filter((F.col(col) < lo) | (F.col(col) > hi)).count()
+    clipped = df.withColumn(
+        col,
+        F.when(F.col(col) < lo, lo).when(F.col(col) > hi, hi).otherwise(F.col(col)),
+    )
+    return clipped, lo, hi, n_clipped
 
 
 def load_core_tables(spark: SparkSession) -> dict[str, DataFrame]:
@@ -149,6 +219,16 @@ def build_order_lines(spark: SparkSession) -> DataFrame:
         .join(broadcast(tables["products"]), on="product_id", how="left")
     )
     order_lines = delivery_delay_days(order_lines)
+    # Winsorise the delivery-delay tail: a handful of extreme late deliveries
+    # otherwise stretch the §6 min-max range and compress everyone else's
+    # demand_norm. p1/p99 bounds; logged in decisions_log 2026-05-29.
+    order_lines, delay_lo, delay_hi, n_clipped = winsorize(
+        order_lines, "delivery_delay_days"
+    )
+    print(
+        f"[winsorize] delivery_delay_days -> [{delay_lo:.1f}, {delay_hi:.1f}] days; "
+        f"{n_clipped:,} order-lines clipped"
+    )
     return (
         order_lines.withColumn("purchase_date", F.to_date("order_purchase_timestamp"))
         .withColumn(
@@ -369,8 +449,13 @@ def fit_and_score(spark: SparkSession) -> dict[str, DataFrame]:
     )
 
     split_week = model_data.approxQuantile("week_num", [0.8], 0.01)[0]
-    train_df = model_data.filter(F.col("week_num") <= split_week)
+    # Cache the train split: each CrossValidator re-reads it numFolds × gridSize
+    # times (3×12 for GBT, 3×8 for RF = 60 fits). Without this, every fit
+    # recomputes the window-feature lineage from parquet and re-shuffles, which
+    # spills tens of GB of shuffle data and exhausts local disk (CLAUDE.md §3).
+    train_df = model_data.filter(F.col("week_num") <= split_week).cache()
     test_df = model_data.filter(F.col("week_num") > split_week)
+    train_df.count()  # materialise the cache before the CV loop
 
     evaluator = RegressionEvaluator(
         labelCol="label", predictionCol="prediction", metricName="rmse"
@@ -384,6 +469,7 @@ def fit_and_score(spark: SparkSession) -> dict[str, DataFrame]:
 
     gbt_rmse = evaluator.evaluate(gbt_model.transform(test_df))
     rf_rmse = evaluator.evaluate(rf_model.transform(test_df))
+    train_df.unpersist()  # done with the train split; free it before scoring
 
     def _winning_params(cv_model, param_names):
         bm = cv_model.bestModel
