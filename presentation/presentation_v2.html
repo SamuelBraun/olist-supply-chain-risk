@@ -666,13 +666,13 @@
     margin-top: 6px;
     letter-spacing: .14em;
   }
-  .funnel-formula {          /* unified conclusion callout: solid black + orange + white */
-    margin-top: auto;
-    padding: 16px 20px;
+  .funnel-formula {          /* unified conclusion callout: full-width, black + orange + white */
+    margin-top: 24px;
+    padding: 18px 24px;
     background: var(--ink);
     color: var(--paper);
-    font-size: 15.5px;
-    line-height: 1.5;
+    font-size: 16px;
+    line-height: 1.55;
   }
   .funnel-formula code {
     background: var(--paper-2);
@@ -1715,10 +1715,6 @@
               <div class="funnel-num" style="color:#FF4011">0<small>0.0%</small></div>
             </div>
 
-            <div class="funnel-formula">
-              <strong>Each seller gets a single risk score</strong> that blends three signals — delivery, customer satisfaction, and structural importance — then lands in one of three bands.<br/>
-              <span style="font-size:13px;color:rgba(255,255,255,.72);">No seller is <strong style="color:var(--orange)">CRITICAL</strong> this week: that needs a seller failing on all three fronts at once, which is rare. The actionable list is the <strong style="color:#F6DA00">67 WARNING</strong> sellers — and the <strong style="color:#fff">57 with no ready backup</strong> are escalated first. Late-delivery rates vary <strong style="color:#fff">~2.4× by state</strong> (AL ~24% vs SC ~10%), so each seller is scored on its own record, not against a single national bar.</span>
-            </div>
           </div>
 
           <div class="watchlist">
@@ -1740,6 +1736,12 @@
               </tbody>
             </table>
           </div>
+        </div>
+
+        <!-- full-width conclusion callout, spanning both columns -->
+        <div class="funnel-formula">
+          <strong>Each seller gets a single risk score</strong> that blends three signals — delivery, customer satisfaction, and structural importance — then lands in one of three bands.
+          <span style="color:rgba(255,255,255,.72);">No seller is <strong style="color:var(--orange)">CRITICAL</strong> this week: that needs a seller failing on all three fronts at once, which is rare. The actionable list is the <strong style="color:#F6DA00">67 WARNING</strong> sellers — and the <strong style="color:#fff">57 with no ready backup</strong> are escalated first. Late-delivery rates vary <strong style="color:#fff">~2.4× by state</strong> (AL ~24% vs SC ~10%), so each seller is scored on its own record, not against a single national bar.</span>
         </div>
       </div>
     </div>
