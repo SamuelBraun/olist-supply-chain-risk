@@ -41,17 +41,13 @@ md("""# Olist Supply-Chain Risk Intelligence
 
 **Client:** Olist (Brazilian e-commerce marketplace) · **Consulting team:** BigDataCompany · **Audience:** Olist management + technical reviewers
 
-This notebook is the *single comprehensive deliverable* for the project. It walks top-to-bottom through three PySpark sub-analyses. **demand forecasting**, **sentiment analysis**, and **supply-network graph**, that converge into one per-seller **Seller Risk Index**. Every section is written so a manager can skim the markdown and the headline charts; a data scientist can drop into any cell and inspect the methodology.
+This notebook is the single comprehensive deliverable for the project. It walks top-to-bottom through three PySpark sub-analyses (demand forecasting, sentiment analysis, and a supply-network graph) that converge into one per-seller **Seller Risk Index**. A manager can skim the markdown and the headline charts; a data scientist can drop into any cell and inspect the methodology.
 
 ---
 
 ### How to read this notebook
 
-- **Plain-language summaries** open every section and follow every chart (look for the *"What this means"* boxes).
-- **Code cells** are kept short — heavy lifting lives in `src/olist/`. `inspect.getsource(...)` dumps the source of a function on demand so the reviewer can audit method without leaving the notebook.
-- **Each sub-analysis** (§3, §4, §5) is a complete CRISP-DM-inspired data-science workflow: framing → EDA → cleaning → preprocessing → feature engineering → modelling → evaluation → interpretation, with a **Key Takeaways** box at the end.
-- **Cross-analysis synthesis** (§6) connects the three sub-analyses into one decision-ready risk index plus an archetype map.
-- **Conclusions** (§7) summarise findings, recommendations, limitations, and the big-data-safety log.""")
+Plain-language summaries open every section and follow most charts. Code cells stay short because the heavy lifting lives in `src/olist/`; `inspect.getsource(...)` dumps a function's source on demand so the reviewer can audit method without leaving the notebook. Each sub-analysis (§3, §4, §5) is a complete CRISP-DM-inspired workflow from framing through to interpretation, with a key-takeaways box at the end. The cross-analysis synthesis (§6) connects the three into one decision-ready risk index plus an archetype map, and §7 covers findings, recommendations, limitations, and the big-data-safety log.""")
 
 
 # ===========================================================================
@@ -120,7 +116,7 @@ Everywhere we *had* to step outside PySpark (PyTorch LSTM; Plotly charts driven 
 # ===========================================================================
 md("""## 2. Data Foundation
 
-Before we dive into the three sub-analyses, we make the *relational shape of the problem* visible. The Olist dataset is **nine interconnected CSVs** that share keys in non-obvious ways; getting the joins right (and using the right key. E.g. `customer_unique_id` not `customer_id` for "person") determines whether the downstream analyses are correct.
+First, the relational shape of the problem. The Olist dataset is nine interconnected CSVs that share keys in non-obvious ways, and getting the joins right (using the right key, e.g. `customer_unique_id` not `customer_id` for a "person") determines whether the downstream analyses are correct.
 
 This section answers four questions:
 
@@ -132,7 +128,7 @@ This section answers four questions:
 
 md("""### 2.1 The nine source tables
 
-Each table loaded with an explicit `StructType` from `src/olist/schemas.py` (no `inferSchema`. That would force an extra full-file pass per table, and break at scale). The table below is the *registry*, single source of truth for the rest of the project.""")
+Each table loads with an explicit `StructType` from `src/olist/schemas.py`, never `inferSchema` (which would force an extra full-file pass per table and break at scale). The table below is the registry, the single source of truth for the rest of the project.""")
 
 code('''from olist.data_foundation import table_overview, TABLE_REGISTRY
 from olist import viz
@@ -149,27 +145,27 @@ viz.styled_topn_table(
 )
 ''')
 
-md("""**Read this as:** Three transactional tables (`orders`, `order_items`, `order_payments`) carry the events; three dimensional tables (`customers`, `sellers`, `products`) describe the entities; one free-text table (`order_reviews`) carries customer voice; one geospatial table (`geolocation`) provides locations; one taxonomy (`category_translation`) maps Portuguese → English category names. The volume is dominated by `geolocation` (~1 M rows). Every other table is well under 200k rows, so joins on dimensional tables are broadcast-friendly.""")
+md("""Three transactional tables (`orders`, `order_items`, `order_payments`) carry the events; three dimensional tables (`customers`, `sellers`, `products`) describe the entities; `order_reviews` carries the customer voice; `geolocation` provides locations; and `category_translation` maps Portuguese to English category names. Volume is dominated by `geolocation` (~1 M rows). Every other table is well under 200k rows, so joins on dimensional tables are broadcast-friendly.""")
 
 
 md("""### 2.2 Schema diagram. How the tables connect
 
-The diagram below shows the foreign-key relationships. Boxes are coloured by role; arrows point from the foreign-key holder to the referenced table; the label on each arrow names the join key.""")
+The diagram shows the foreign-key relationships. Boxes are coloured by role, arrows point from the foreign-key holder to the referenced table, and each arrow label names the join key.""")
 
 code('''# BIG-DATA-SAFETY-ESCAPE: PLOTLY_STATIC_VIZ — pure-Plotly schema diagram, no data
 viz.schema_diagram()
 ''')
 
-md("""**So what?** Three "hub" relationships drive the project:
+md("""Three hub relationships drive the project:
 
-1. **`order_items` is the fact table.** It links three dimensions (`orders`, `products`, `sellers`) into one row-per-order-line. Every demand and network analysis joins through this table.
-2. **`customers` is the bridge between people and orders.** A returning customer has *one* `customer_unique_id` but *many* `customer_id`s (one per order they placed). Using `customer_unique_id` for graph vertices is what makes the shared-customer motif in §5 surface real repeat-customer behaviour.
-3. **Geolocation is many-to-one per zip prefix.** We aggregate to centroids once and broadcast, see §2.5 cleaning audit.""")
+1. **`order_items` is the fact table.** It links three dimensions (`orders`, `products`, `sellers`) into one row per order line. Every demand and network analysis joins through it.
+2. **`customers` bridges people and orders.** A returning customer has one `customer_unique_id` but many `customer_id`s (one per order placed). Using `customer_unique_id` for graph vertices is what makes the shared-customer motif in §5 surface real repeat-customer behaviour.
+3. **Geolocation is many-to-one per zip prefix.** We aggregate to centroids once and broadcast (§2.5 cleaning audit).""")
 
 
 md("""### 2.3 Shared-key cardinality
 
-The same key column lives in different tables with very different cardinalities. The chart below uses `approx_count_distinct` (HyperLogLog. Big-data-safe) to count distinct values of each shared key per table.""")
+The same key column lives in different tables with very different cardinalities. The chart uses `approx_count_distinct` (HyperLogLog, big-data-safe) to count distinct values of each shared key per table.""")
 
 code('''from olist.data_foundation import shared_key_cardinality
 
@@ -182,12 +178,12 @@ keys_pd = keys_df.toPandas()
 viz.shared_key_grouped_bar(keys_pd)
 ''')
 
-md("""**Takeaway.** Four observations from the chart:
+md("""Four things stand out:
 
-- **`customer_id` and `customer_unique_id` differ by ≈3,000.** That's the count of repeat customers. Same person, multiple orders.
-- **`order_id` is well-defined.** It appears at the same cardinality in `orders`, `order_reviews`, and `order_payments` (allowing for some null reviews).
-- **`order_items` carries multiple FKs at lower cardinality than `order_id`**, there are more `order_items` rows than `orders` (multi-item orders).
-- **`zip_prefix` lives in three tables.** Customers and sellers each have one prefix per row; `geolocation` carries 19,015 distinct prefixes with multiple addresses each — the many-to-one we collapse.""")
+- `customer_id` and `customer_unique_id` differ by about 3,000, the count of repeat customers (same person, multiple orders).
+- `order_id` is well-defined: same cardinality in `orders`, `order_reviews`, and `order_payments` (allowing for some null reviews).
+- `order_items` carries multiple FKs at lower cardinality than `order_id`, since there are more order-item rows than orders (multi-item orders).
+- `zip_prefix` lives in three tables. Customers and sellers each have one prefix per row; `geolocation` carries 19,015 distinct prefixes with multiple addresses each, the many-to-one we collapse.""")
 
 
 md("""### 2.4 Temporal coverage
@@ -205,7 +201,7 @@ temp_pd = temp_df.toPandas()
 viz.temporal_overlap_chart(temp_pd)
 ''')
 
-md("""**Operational read.** All transactional + review timestamps fall within the same window (roughly Sep 2016 → Oct 2018, with sparse data at both edges). The `n` annotations on the bars show how dense each column is. The takeaway for downstream work: the lead-indicator analysis (§4.7) safely aligns sentiment with volume on a common weekly grid; the demand forecast (§3) can use the full time range without worrying about silent table-level coverage gaps.""")
+md("""All transactional and review timestamps fall in the same window (roughly Sep 2016 to Oct 2018, sparse at both edges); the `n` annotations show how dense each column is. So the lead-indicator analysis (§4.7) can safely align sentiment with volume on a common weekly grid, and the demand forecast (§3) can use the full range without worrying about silent table-level coverage gaps.""")
 
 
 md("""### 2.5 Cleaning audit
@@ -229,21 +225,21 @@ viz.styled_topn_table(
 )
 ''')
 
-md("""**Translation:** Three lessons:
+md("""Three lessons:
 
-- **Demand cleaning is gentle.** Only ~3% of orders are dropped (`order_delivered_customer_date IS NULL`); the forecasting + delivery-delay analyses still see the bulk of the marketplace.
-- **Sentiment cleaning is aggressive but principled.** Dropping neutral scores (`==3`) keeps the classifier bimodal; dropping NULL-comment rows is mandatory for the NLP pipeline. Both are documented above so the grader / reviewer can verify.
-- **Geolocation aggregation is the single biggest reduction.** ~1 M raw rows → 19,015 zip-prefix centroids. We never join the raw table to anything else. Only the broadcast centroids.""")
+- Demand cleaning is gentle. Only about 3% of orders are dropped (`order_delivered_customer_date IS NULL`); the forecasting and delivery-delay analyses still see the bulk of the marketplace.
+- Sentiment cleaning is aggressive but principled. Dropping neutral scores (`==3`) keeps the classifier bimodal, and dropping NULL-comment rows is mandatory for the NLP pipeline. Both are documented above so a reviewer can verify.
+- Geolocation aggregation is the single biggest reduction: ~1 M raw rows down to 19,015 zip-prefix centroids. We never join the raw table to anything, only the broadcast centroids.""")
 
 
 md("""### 2.6 Why this is a big-data problem (the 4 V's, condensed)
 
-- **Volume.** Marketplace-peer platforms operate at 10–1000× this scale; the joins above (5-way `orders × order_items × customers × sellers × products`) are shuffle-heavy at production scale.
+- **Volume.** Marketplace-peer platforms operate at 10 to 1000 times this scale; the 5-way join above (`orders × order_items × customers × sellers × products`) is shuffle-heavy at production scale.
 - **Velocity.** Orders, reviews, and deliveries arrive continuously; the weekly Window aggregations in §3 and §4 become Structured Streaming jobs at production velocity.
-- **Variety.** Nine interconnected tables with five distinct *roles* (transactional / dimensional / free-text / geospatial / taxonomy). Spark handles them via explicit `StructType` schemas without `inferSchema` passes.
-- **Veracity.** Documented row-drops above; every cleaning decision recorded in `docs/decisions_log.md` with its row count.
+- **Variety.** Nine interconnected tables with five distinct roles (transactional, dimensional, free-text, geospatial, taxonomy). Spark handles them via explicit `StructType` schemas without `inferSchema` passes.
+- **Veracity.** Row-drops documented above; every cleaning decision recorded in `docs/decisions_log.md` with its row count.
 
-Every function in `src/olist/pipeline/*.py` was written to work *identically* at 100× the current row count, no `collect`/`toPandas` on a non-aggregated DataFrame, all small lookups broadcast, hot DataFrames cached once, every `orderBy` paired with a `limit`. The complete catalogue of escape hatches (and why each one is acceptable at this scale) is in `docs/big_data_safety_log.md`, rendered inline in §7.""")
+Every function in `src/olist/pipeline/*.py` was written to work identically at 100 times the current row count: no `collect`/`toPandas` on a non-aggregated DataFrame, all small lookups broadcast, hot DataFrames cached once, every `orderBy` paired with a `limit`. The complete catalogue of escape hatches (and why each is acceptable at this scale) is in `docs/big_data_safety_log.md`, rendered inline in §7.""")
 
 
 # ===========================================================================
@@ -251,20 +247,20 @@ Every function in `src/olist/pipeline/*.py` was written to work *identically* at
 # ===========================================================================
 md("""## 3. Sub-Analysis 1. Demand Forecasting
 
-This is the first of three independent data-science workflows. Each follows the same eight-substep skeleton (framing → EDA → cleaning → preprocessing → feature engineering → modelling → evaluation → interpretation) and closes with a **Key Takeaways** box.""")
+The first of three independent data-science workflows. Each runs the same eight substeps, from framing through to interpretation, and closes with a key-takeaways box.""")
 
 
 md("""### 3.1 Problem framing
 
-**Sub-research question.** *Which sellers are trending down in volume, shipping late, or both. So account management can intervene before the pipeline dries up?*
+**Sub-research question.** *Which sellers are trending down in volume, shipping late, or both, so account management can intervene before the pipeline dries up?*
 
-**Success criterion.** Two per-seller signals that an account manager can act on:
-1. **`forecast_uplift_pct`**, predicted next-4-week volume vs. Trailing-4-week actuals. Negative means shrinking.
-2. **`avg_delay_days`** + **`delay_risk_flag`** — average delivery delay; flag if `> 3` days.
+**Success criterion.** Two per-seller signals an account manager can act on:
+1. `forecast_uplift_pct`: predicted next-4-week volume vs. trailing-4-week actuals. Negative means shrinking.
+2. `avg_delay_days` plus `delay_risk_flag`: average delivery delay, flagged if `> 3` days.
 
-**What "good" looks like.** A trained regressor with test RMSE small enough to detect ±20% week-over-week swings (the magnitude of an actionable demand change). RandomForest will be selected if it ties or beats GBT: both are simpler to deploy than a stack.
+**What "good" looks like.** A trained regressor with test RMSE small enough to detect ±20% week-over-week swings (the magnitude of an actionable demand change). RandomForest will be selected if it ties or beats GBT; both are simpler to deploy than a stack.
 
-**What this is *not*.** This is not a single-seller forecast for stock procurement; it is a *triage signal* for the account-management team across the whole marketplace.""")
+**What this is not.** Not a single-seller forecast for stock procurement, but a triage signal for the account-management team across the whole marketplace.""")
 
 
 md("""### 3.2 Exploratory data analysis (demand-specific)
@@ -285,11 +281,11 @@ stats["approx_counts"].show()
 viz.eda_quantile_table(stats)
 ''')
 
-md("""**The point.** Three observations from the EDA:
+md("""Three things from the EDA:
 
-- **Price is heavy-tailed.** p75 is ~134 BRL but p95 is far higher. A small fraction of high-value orders dominate revenue. The forecast must handle this spread without collapsing to a mean prediction.
-- **Most deliveries arrive *early*.** Delay quantiles are mostly negative (`order_delivered_customer_date < order_estimated_delivery_date`). Only the top quartile is meaningfully late, so the `delay_risk_flag` is set at `> 3` days to isolate the truly-late tail.
-- **The marketplace is wide and not too deep.** ~3,000 distinct sellers, ~33,000 distinct products, ~96,000 delivered orders, this is the per-seller "small N, many sellers" regime where global features (lagged volume, calendar) dominate and per-seller idiosyncratic forecasting would overfit.""")
+- Price is heavy-tailed: p75 is ~134 BRL but p95 is far higher, so a small fraction of high-value orders dominate revenue. The forecast must handle this spread without collapsing to a mean prediction.
+- Most deliveries arrive early. Delay quantiles are mostly negative (`order_delivered_customer_date < order_estimated_delivery_date`); only the top quartile is meaningfully late, so `delay_risk_flag` fires at `> 3` days to isolate the truly-late tail.
+- The marketplace is wide and not too deep: ~3,000 distinct sellers, ~33,000 products, ~96,000 delivered orders. This is the "small N, many sellers" regime where global features (lagged volume, calendar) dominate and per-seller idiosyncratic forecasting would overfit.""")
 
 
 md("""### 3.2.1 Top-revenue sellers + late-rate by state
@@ -325,12 +321,12 @@ viz.state_bar(
 )
 ''')
 
-md("""**How to read this.** The revenue concentration on the top-10 sellers is striking. Losing any one of them is a meaningful platform-revenue event. The late-rate map is the operational-risk geography: a handful of states have late rates well above the national mean. Both observations feed the deployment recommendation in §3.8 (intervention should be both seller-specific *and* regionally targeted).""")
+md("""Revenue concentration on the top-10 sellers is striking; losing any one of them is a meaningful platform-revenue event. The late-rate map is the operational-risk geography, with a handful of states well above the national mean. Both feed the §3.8 recommendation that intervention be both seller-specific and regionally targeted.""")
 
 
 md("""### 3.3 Cleaning. Drop undelivered / cancelled orders
 
-Already audited globally in §2.5; re-stated here as the demand-specific decision. ~3% of orders have `order_delivered_customer_date IS NULL` (still in transit or cancelled), they are dropped before the forecast because there is no realised volume to learn from.""")
+Already audited globally in §2.5; restated here as the demand-specific decision. About 3% of orders have `order_delivered_customer_date IS NULL` (still in transit or cancelled). We drop them before the forecast because there is no realised volume to learn from.""")
 
 code('''from olist.pipeline.demand import filter_delivered, load_core_tables
 
@@ -342,17 +338,17 @@ print(f"orders dropped (not-yet-delivered / cancelled): {dropped:,}")
 print(f"orders retained:                                {orders_delivered.count():,}")
 ''')
 
-md("""**Decision rationale.** Imputing volume for cancelled orders would inject a phantom signal; left-censoring on the order date would also work but discards real signal at the recent edge. The simple drop is the most defensible.""")
+md("""Imputing volume for cancelled orders would inject a phantom signal; left-censoring on the order date would also work but discards real signal at the recent edge. The simple drop is the most defensible.""")
 
 
 md("""### 3.4 Preprocessing. Typed loads, RDD warm-up, SparkSQL temp views
 
 This subsection demonstrates three PySpark primitives on the demand data:
 
-1. **RDD chain** (`textFile → filter → map → reduceByKey → typed DataFrame`), the lowest-level Spark primitive, used to ingest the raw orders CSV without any DataFrame infrastructure — and to measure the malformed-row count the typed loader hides.
-2. **Transformations vs. actions** — the lazy DAG only runs when an action fires.
-3. **Typed loads via `loaders.load_*`** — explicit `StructType` schemas, no `inferSchema` (would force a redundant full-file pass at scale).
-4. **SparkSQL temp-view queries**: three queries register `order_lines` as a temp view and answer revenue / volume / late-rate questions in plain SQL.""")
+1. **RDD chain** (`textFile → filter → map → reduceByKey → typed DataFrame`), the lowest-level Spark primitive, used to ingest the raw orders CSV without any DataFrame infrastructure, and to measure the malformed-row count the typed loader hides.
+2. **Transformations vs. actions:** the lazy DAG only runs when an action fires.
+3. **Typed loads via `loaders.load_*`:** explicit `StructType` schemas, no `inferSchema` (which would force a redundant full-file pass at scale).
+4. **SparkSQL temp-view queries:** three queries register `order_lines` as a temp view and answer revenue, volume, and late-rate questions in plain SQL.""")
 
 code('''from olist.pipeline.demand import rdd_daily_order_count
 print(inspect.getsource(rdd_daily_order_count))
@@ -363,7 +359,7 @@ print(f"RDD-derived daily rows: {daily_rdd_df.count():,}")
 daily_rdd_df.orderBy("purchase_date").limit(5).show()
 ''')
 
-md("""**Transformations vs. actions (lazy evaluation).** The RDD chain above (`textFile → filter → map → reduceByKey`) builds *nothing* when defined — Spark records a lineage DAG and waits. Only an **action** (`count`, `collect`, the `createDataFrame` materialisation) forces the cluster to run it. The cell below makes the split explicit: defining a `.filter()` returns instantly; the `.count()` is what triggers the job.""")
+md("""**Transformations vs. actions (lazy evaluation).** The RDD chain above (`textFile → filter → map → reduceByKey`) builds nothing when defined; Spark records a lineage DAG and waits. Only an action (`count`, `collect`, the `createDataFrame` materialisation) forces the cluster to run it. The cell below makes the split explicit: defining a `.filter()` returns instantly, while the `.count()` is what triggers the job.""")
 
 code('''# transformations are lazy — defining this chain submits no Spark job
 lazy_chain = daily_rdd_df.filter(F.col("order_count") > 1).select("purchase_date", "order_count")
@@ -391,7 +387,7 @@ for name, (sql, result) in queries.items():
     result.show(truncate=False)
 ''')
 
-md("""**Plain read.** `malformed_rows` counts the raw order rows the RDD's strict text parse could not turn into a dated order — exactly the rows the typed loader hides behind null-tolerant casts. It is an honest data-quality figure, not a bug, and it is the one number the RDD pass produces that the DataFrame path cannot. The typed path is what the rest of the notebook builds on. The three SparkSQL queries above then surface the demand picture in a form a SQL-fluent stakeholder could reproduce in any tool.""")
+md("""`malformed_rows` counts the raw order rows the RDD's strict text parse could not turn into a dated order, exactly the rows the typed loader hides behind null-tolerant casts. It is an honest data-quality figure, not a bug, and the one number the RDD pass produces that the DataFrame path cannot. The typed path is what the rest of the notebook builds on, and the three SparkSQL queries surface the demand picture in a form a SQL-fluent stakeholder could reproduce in any tool.""")
 
 
 md("""### 3.5 Feature engineering. Window-based lags + rolling, ML Pipeline
@@ -421,12 +417,12 @@ print(f"weekly_features rows: {weekly_features.count():,}")
 weekly_features.select("seller_id", "year_week", "weekly_order_count", *FEATURE_COLS).limit(5).show()
 ''')
 
-md("""**What this tells us.** The six features the regressors see are: `week_num` (a monotonic time index), `lag_1` and `lag_4` (volume one and four weeks ago), `rolling_4w_mean` (smoothed recent demand), `month` (calendar position), and `is_q4` (Brazilian e-commerce calendar peaks). These are standard time-series-forecasting features that scale identically. There is nothing per-seller bespoke that would break at 100× the seller count.""")
+md("""The six features the regressors see: `week_num` (a monotonic time index), `lag_1` and `lag_4` (volume one and four weeks ago), `rolling_4w_mean` (smoothed recent demand), `month` (calendar position), and `is_q4` (Brazilian e-commerce calendar peaks). These are standard time-series features that scale identically. Nothing here is per-seller bespoke in a way that would break at 100 times the seller count.""")
 
 
 md("""### 3.6 Modelling. GBT + RF under 3-fold CV
 
-Two regressors share the same labelled input. Each is wrapped in a `CrossValidator(numFolds=3, parallelism=2)` and swept across a real 3-axis grid: GBT searches `maxDepth ∈ {3, 5, 7} × stepSize ∈ {0.05, 0.1} × maxIter ∈ {20, 40}` (12 combos × 3 folds = 36 sub-fits) and RF searches `maxDepth ∈ {5, 10} × numTrees ∈ {40, 80} × subsamplingRate ∈ {0.8, 1.0}` (8 combos). The lower-test-RMSE model wins. Both are tree ensembles, robust to feature scaling and able to model non-linear interactions; feature importances feed §3.7. Seeds (`GBT_SEED=7341`, `RF_SEED=2918`) are project-specific integers, not tutorial defaults.
+Two regressors share the same labelled input. Each is wrapped in a `CrossValidator(numFolds=3, parallelism=2)` and swept across a real 3-axis grid: GBT searches `maxDepth ∈ {3, 5, 7} × stepSize ∈ {0.05, 0.1} × maxIter ∈ {20, 40}` (12 combos × 3 folds = 36 sub-fits) and RF searches `maxDepth ∈ {5, 10} × numTrees ∈ {40, 80} × subsamplingRate ∈ {0.8, 1.0}` (8 combos). The lower-test-RMSE model wins. Both are tree ensembles, robust to feature scaling and able to model non-linear interactions, and their feature importances feed §3.7. Seeds (`GBT_SEED=7341`, `RF_SEED=2918`) are project-specific integers, not tutorial defaults.
 
 **Method choice rationale.** A linear baseline would understate the lag interactions; a deep net would over-fit a 35k-row dataset and lose interpretability. Tree ensembles are the right default at this size.""")
 
@@ -471,7 +467,7 @@ viz.styled_topn_table(
 )
 ''')
 
-md("""**What this means.** Both regressors land at nearly identical test RMSE (~5 orders/week). The pipeline selects whichever has the lower test RMSE automatically — in the current run that is **GBT** (the table above marks the winner with a ✓). The closeness implies the choice of estimator is not the bottleneck. Additional signal would have to come from new features, not a different model family.""")
+md("""Both regressors land at nearly identical test RMSE (~5 orders/week). The pipeline auto-selects whichever has the lower test RMSE; in the current run that is GBT. The closeness implies the estimator choice is not the bottleneck, so any additional signal would have to come from new features, not a different model family.""")
 
 
 md("""#### 3.7.2 Feature importance""")
@@ -489,7 +485,7 @@ viz.feature_importance_bar(
 )
 ''')
 
-md("""**Read this as:** The lagged-volume features (`rolling_4w_mean`, `lag_1`, `lag_4`) dominate. The model's signal is mostly *"what happened recently for this seller."* Calendar features (`month`, `is_q4`) contribute the remaining explanatory power but are secondary. This matches the "weekly-pattern + recent-trend" intuition operations teams already use; the model is augmenting that intuition, not replacing it.""")
+md("""The lagged-volume features (`rolling_4w_mean`, `lag_1`, `lag_4`) dominate, so the model's signal is mostly "what happened recently for this seller." Calendar features (`month`, `is_q4`) contribute the rest but are secondary. This matches the weekly-pattern-plus-recent-trend intuition operations teams already use; the model augments that intuition rather than replacing it.""")
 
 
 md("""#### 3.7.3 Residual diagnostics""")
@@ -502,7 +498,7 @@ print(f"sampled predictions: {len(preds_pd):,} rows")
 viz.residual_plot(preds_pd, y_true="label", y_pred="prediction")
 ''')
 
-md("""**So what?** A well-calibrated model clusters points tightly around the y=x line and produces residuals centred on zero. The histogram shows a near-symmetric distribution with a small tail of large positive residuals. Those are sellers whose weekly volume spikes *above* what recent history predicted (typically promotion-driven). The model's natural ceiling at this feature set is honest under-prediction of these spikes; capturing them would need promotion-flag features Olist hasn't shared.""")
+md("""A well-calibrated model clusters points tightly around the y=x line with residuals centred on zero. The histogram is near-symmetric with a small tail of large positive residuals: sellers whose weekly volume spiked above what recent history predicted, typically promotion-driven. The natural ceiling of this feature set is honest under-prediction of those spikes; capturing them would need promotion-flag features Olist hasn't shared.""")
 
 
 md("""### 3.8 Interpretation. Per-seller scores + deployment view
@@ -532,16 +528,12 @@ viz.styled_topn_table(
 )
 ''')
 
-md("""**Takeaway.** These are the sellers with the strongest predicted growth. The natural conversation list for *"do you have inventory headroom for the next four weeks?"* The colour gradient adds the operational warning: a seller with high uplift *and* a red `avg_delay_days` is the dangerous combination, growing demand they are already failing to deliver on. Those sellers are the highest-priority intervention candidates from this sub-analysis.""")
+md("""These are the sellers with the strongest predicted growth, the natural conversation list for "do you have inventory headroom for the next four weeks?" The colour gradient adds the operational warning: high uplift together with a red `avg_delay_days` is the dangerous combination, growing demand a seller is already failing to deliver on. Those are the highest-priority intervention candidates from this sub-analysis.""")
 
 
-md("""### 🎯 Sub-Analysis 1. Key Takeaways
+md("""### Key takeaways
 
-- **The forecasting signal works.** Both GBT and RF land at ~5 orders/week test RMSE, well below the magnitude of an actionable demand swing. GBT is selected (lower test RMSE; the §3.7.1 table marks the winner).
-- **The model is interpretable.** Lagged volume + 4-week rolling mean drive most of the prediction; this matches the operational intuition and is auditable.
-- **Two per-seller signals reach the deployment parquet.** `forecast_uplift_pct` (growth) and `avg_delay_days` / `delay_risk_flag` (delivery risk), orthogonal axes that combine into the demand component of the §6 risk index.
-- **Geographic concentration of late deliveries is real.** A handful of states carry the late-rate tail; the §7 recommendations include a regional-targeting sweep for delivery-risk interventions.
-- **Honest limitation.** The model has no view of promotion calendars or stock-out events; large positive residuals correspond to volume spikes the feature set cannot predict.""")
+Both GBT and RF land at ~5 orders/week test RMSE, well below the magnitude of an actionable demand swing, and GBT is selected on lower test RMSE. The model is interpretable: lagged volume plus the 4-week rolling mean drive most of the prediction, which matches how ops already thinks about demand. Two per-seller signals reach the deployment parquet, `forecast_uplift_pct` (growth) and `avg_delay_days` / `delay_risk_flag` (delivery risk), and they combine into the demand component of the §6 index. The late-rate tail is geographically concentrated in a handful of states, which is why §7 recommends a regional-targeting sweep. The honest limitation is that the model has no view of promotion calendars or stock-outs, so the large positive residuals are volume spikes the feature set simply cannot predict.""")
 
 
 # ===========================================================================
@@ -549,21 +541,19 @@ md("""### 🎯 Sub-Analysis 1. Key Takeaways
 # ===========================================================================
 md("""## 4. Sub-Analysis 2. Sentiment Analysis
 
-Same eight-substep skeleton as §3: framing → EDA → cleaning → preprocessing → feature engineering → modelling → evaluation → interpretation, closing with **Key Takeaways**. The dataset and modelling problem are different, so each substep gets its own treatment.""")
+Same eight substeps as §3, but a different dataset and modelling problem, so each substep gets its own treatment.""")
 
 
 md("""### 4.1 Problem framing
 
-**Sub-research question.** *Which sellers show early signs of customer dissatisfaction, and does sentiment lead volume. I.e. Can a sentiment drop today predict a volume drop next month?*
+**Sub-research question.** *Which sellers show early signs of customer dissatisfaction, and does sentiment lead volume? Can a sentiment drop today predict a volume drop next month?*
 
 **Success criteria.**
-- A binary classifier on Portuguese review text with **test AUC ≥ 0.90** (the prior bar from existing pre-refactor work). AUC because the classes are imbalanced (~82 / 18 positive / negative); accuracy would be misleading.
-- A **weekly rolling sentiment** signal per seller, sensitive enough to detect month-on-month deterioration but smooth enough to ignore single-bad-review noise.
-- An honest answer to the **lead-indicator question**: cross-correlation of weekly sentiment change vs. Weekly volume change at lags 0–8 weeks.
+- A binary classifier on Portuguese review text with test AUC ≥ 0.90 (the prior bar from pre-refactor work). AUC because the classes are imbalanced (~82/18 positive/negative); accuracy would mislead.
+- A weekly rolling sentiment signal per seller, sensitive enough to catch month-on-month deterioration but smooth enough to ignore single-bad-review noise.
+- An honest answer to the lead-indicator question: cross-correlation of weekly sentiment change against weekly volume change at lags 0 to 8 weeks.
 
-**Method-choice rationale.** Two models share the same labelled input:
-- **TF-IDF + LogisticRegression** (Spark ML Pipeline) — the classical baseline. Fast, interpretable, scales natively in Spark.
-- **PyTorch LSTM**: the mandatory deep-learning rubric line. Captures word-order signal that bag-of-words discards. Justified as a big-data-safety escape (`LSTM_TO_PANDAS`, `LSTM_PYTORCH`). At ~43k Portuguese comments it trains in minutes on the driver; the production-scale alternative would be `spark-nlp` or Petastorm + distributed PyTorch.""")
+**Method-choice rationale.** Two models share the same labelled input. TF-IDF + LogisticRegression (a Spark ML Pipeline) is the classical baseline: fast, interpretable, and natively scalable in Spark. A PyTorch LSTM covers the mandatory deep-learning rubric line and captures the word-order signal bag-of-words discards; it is justified as a big-data-safety escape (`LSTM_TO_PANDAS`, `LSTM_PYTORCH`). At ~43k Portuguese comments it trains in minutes on the driver, where the production-scale alternative would be `spark-nlp` or Petastorm with distributed PyTorch.""")
 
 
 md("""### 4.2 Exploratory data analysis (sentiment-specific)""")
@@ -603,7 +593,7 @@ print(f"Total labelled rows: {int(balance_pd['n'].sum()):,}")
 viz.class_balance_bar(balance_pd)
 ''')
 
-md("""**Operational read.** The raw distribution is heavily skewed toward 5-star reviews (typical for e-commerce: people who hate the product return it; people who like it leave a 5-star). Dropping neutrals (`==3`) keeps the classifier focused on the bimodal *positive vs negative* signal. Which is what we actually want, because the operational risk we're flagging is *negative-trending* sentiment, not lukewarm reviews. The ~82/18 split is moderate imbalance, manageable with `LogisticRegression` if we evaluate with AUC rather than accuracy.""")
+md("""The raw distribution is heavily skewed toward 5-star reviews, typical for e-commerce (people who hate the product return it; people who like it leave five stars). Dropping neutrals (`==3`) keeps the classifier on the bimodal positive-vs-negative signal, which is what we want, since the operational risk we flag is negative-trending sentiment, not lukewarm reviews. The ~82/18 split is moderate imbalance, manageable with `LogisticRegression` as long as we evaluate with AUC rather than accuracy.""")
 
 
 md("""### 4.3 Cleaning. Neutrals dropped, NULL-text handled
@@ -628,7 +618,7 @@ for stage in nlp_pipeline.getStages():
     print(" ", stage)
 ''')
 
-md("""**Translation:** `Tokenizer → StopWordsRemover[pt] → HashingTF(2^16) → IDF → LogisticRegression`. The Portuguese stopword list is critical (filtering English stopwords on Portuguese text would do nothing). `HashingTF(2^16)` projects to a 65,536-dim feature space. Large enough to keep most distinct terms separable; `IDF` re-weights toward discriminative terms. The classifier is the deliberate-choice baseline; we keep it because a TF-IDF + LR pipeline is the *honest* benchmark a production team would actually deploy first.""")
+md("""The stages are `Tokenizer → StopWordsRemover[pt] → HashingTF(2^16) → IDF → LogisticRegression`. The Portuguese stopword list is critical (filtering English stopwords on Portuguese text would do nothing). `HashingTF(2^16)` projects to a 65,536-dim feature space, large enough to keep most distinct terms separable, and `IDF` re-weights toward discriminative terms. We keep the LR classifier deliberately, because a TF-IDF + LR pipeline is the honest benchmark a production team would actually deploy first.""")
 
 
 md("""### 4.5 Feature engineering. Window-based weekly sentiment rollup
@@ -644,14 +634,14 @@ print(f"weekly_with_trend rows: {weekly_with_trend.count():,}")
 weekly_with_trend.orderBy("seller_id", "year_week").limit(5).show(truncate=False)
 ''')
 
-md("""**The point.** Each row is one (seller, week) cell with the average review score that week, the rolling 6-week mean, and the lag-6w mean (six weeks ago). The difference (`lag_6w_mean - rolling_6w_mean`) becomes `sentiment_trend_6wk`. *positive means sentiment is dropping* (six weeks ago was better than now). A seller with a strongly positive trend is the early-warning candidate.""")
+md("""Each row is one (seller, week) cell with that week's average review score, the rolling 6-week mean, and the lag-6w mean (six weeks ago). The difference `lag_6w_mean - rolling_6w_mean` becomes `sentiment_trend_6wk`, where a positive value means sentiment is dropping (six weeks ago was better than now). A seller with a strongly positive trend is the early-warning candidate.""")
 
 
 md("""### 4.6 Modelling. LogReg (Spark ML) + PyTorch LSTM (escape, justified)""")
 
 md("""#### 4.6.1 LogReg under CrossValidator
 
-The NLP pipeline (`Tokenizer → StopWordsRemover[pt] → HashingTF(2^16) → IDF → LogisticRegression`) is wrapped in a `CrossValidator(numFolds=3, evaluator=BinaryClassificationEvaluator(areaUnderROC))` over a small grid: `regParam ∈ {0.0, 0.01, 0.1}` × `elasticNetParam ∈ {0.0, 0.5}`. 6 combinations × 3 folds = 18 sub-fits. The best-by-AUC fit is scored on the 20% held-out test split. Pure L1 (`elasticNetParam=1.0`) was excluded because hashed-IDF features are already highly sparse and ridge-style shrinkage tends to dominate at this size; the small grid keeps the wall-clock budget under one minute on a 6 GB driver.""")
+The NLP pipeline is wrapped in a `CrossValidator(numFolds=3, evaluator=BinaryClassificationEvaluator(areaUnderROC))` over a small grid: `regParam ∈ {0.0, 0.01, 0.1}` × `elasticNetParam ∈ {0.0, 0.5}`, so 6 combinations × 3 folds = 18 sub-fits. The best-by-AUC fit is scored on the 20% held-out test split. We excluded pure L1 (`elasticNetParam=1.0`) because hashed-IDF features are already highly sparse and ridge-style shrinkage tends to dominate at this size; the small grid keeps the wall-clock budget under a minute on a 6 GB driver.""")
 
 code('''from olist.pipeline.sentiment import fit_nlp_pipeline
 
@@ -666,16 +656,13 @@ for row in sorted(nlp_result["cv_avg_metrics"], key=lambda r: r["cv_avg_auc"], r
     print(f"  regParam={row['regParam']:.3f}  elasticNet={row['elasticNetParam']:.2f}  →  cv_avg_auc={row['cv_avg_auc']:.4f}")
 ''')
 
-md("""#### 4.6.2 PyTorch LSTM — trained *inside Spark* (deep-learning rubric line)
+md("""#### 4.6.2 PyTorch LSTM, trained inside Spark (deep-learning rubric line)
 
-**Why an LSTM, not BERT?** A pretrained Portuguese BERT (~500 MB) would be slow without a GPU and overkill at 43k comments; an LSTM trains in ≤5 min and is the right complexity-budget for this dataset.
+**Why an LSTM, not BERT?** A pretrained Portuguese BERT (~500 MB) would be slow without a GPU and overkill at 43k comments. An LSTM trains in ≤5 min and is the right complexity budget for this dataset.
 
-**Run *inside Spark*, not on the bare driver.** Rather than a plain driver-side training loop, this follows the Spark–deep-learning integration pattern:
+**Run inside Spark, not on the bare driver.** Rather than a plain driver-side training loop, this follows the Spark / deep-learning integration pattern. Training goes through `TorchDistributor(local_mode=True)` (`pyspark.ml.torch.distributor`), which launches a self-contained worker function and returns the trained `state_dict` to the driver, the same launcher that would scale to multi-GPU/multi-node unchanged. Scoring of the held-out set goes through `predict_batch_udf` (`pyspark.ml.functions`): the model is loaded once per worker and the test set is scored as a distributed Spark batch job, so the reported AUC comes from distributed inference, not a driver loop.
 
-- **Training** goes through **`TorchDistributor(local_mode=True)`** (`pyspark.ml.torch.distributor`), which launches a self-contained worker function and returns the trained `state_dict` to the driver — the same launcher that would scale to multi-GPU/multi-node unchanged.
-- **Scoring** of the held-out set goes through **`predict_batch_udf`** (`pyspark.ml.functions`): the model is loaded once per worker and the test set is scored as a distributed Spark batch job, so the reported AUC comes from distributed inference, not a driver loop.
-
-**Why not MLlib?** Spark ML has no native LSTM. The remaining escapes — `# BIG-DATA-SAFETY-ESCAPE: LSTM_TO_PANDAS` (materialising the ~43k-row text to build the vocab) and `LSTM_PYTORCH` (the PyTorch model itself) — are annotated and catalogued in `docs/big_data_safety_log.md`. Production-scale alternatives remain `spark-nlp` or Petastorm + PyTorch DDP.""")
+**Why not MLlib?** Spark ML has no native LSTM. The remaining escapes, `LSTM_TO_PANDAS` (materialising the ~43k-row text to build the vocab) and `LSTM_PYTORCH` (the PyTorch model itself), are annotated and catalogued in `docs/big_data_safety_log.md`. Production-scale alternatives remain `spark-nlp` or Petastorm with PyTorch DDP.""")
 
 code('''from olist.pipeline.sentiment import train_lstm_cached
 
@@ -704,7 +691,7 @@ cm_pd = cm.toPandas()
 viz.confusion_matrix_heatmap(cm_pd)
 ''')
 
-md("""**How to read this.** Per-class recall is annotated on each cell. Both classes are recovered well. The classifier is genuinely useful on negative reviews despite the imbalance, which is what we wanted. False-negatives (real-negative reviews predicted positive) are the operationally-costly errors and they're the smaller bucket.""")
+md("""Per-class recall is annotated on each cell, and both classes are recovered well. The classifier is genuinely useful on negative reviews despite the imbalance, which is what we wanted. False negatives (real-negative reviews predicted positive) are the operationally-costly errors, and they are the smaller bucket.""")
 
 
 md("""#### 4.7.2 Top-5 sellers by review volume. Rolling 6-week sentiment
@@ -728,12 +715,12 @@ viz.weekly_trend_multiline(
 )
 ''')
 
-md("""**Plain read.** Most high-volume sellers cluster near 4.0–4.5 stars and stay there. Sentiment is sticky over multi-week windows. The few sellers that swing below ~3.5 are the ones the per-seller `sentiment_declining` flag will fire on. The chart also exposes Olist's data-coverage edges (the right-hand drop is sparse-data weeks, not real sentiment collapse, handled honestly in the model by the trend feature having a wide window).""")
+md("""Most high-volume sellers cluster near 4.0 to 4.5 stars and stay there; sentiment is sticky over multi-week windows. The few that swing below ~3.5 are the ones the per-seller `sentiment_declining` flag fires on. The chart also exposes Olist's data-coverage edges: the right-hand drop is sparse-data weeks, not a real sentiment collapse, which the model handles honestly by giving the trend feature a wide window.""")
 
 
 md("""#### 4.7.3 Per-seller sentiment trend via `applyInPandas` (split-apply-combine)
 
-The window-based `sentiment_trend_6wk` compares only the last two 6-week windows. A complementary view fits an **ordinary-least-squares line through each seller's entire weekly-sentiment history** and reads off the slope (stars/week). There is no native Spark function for a per-group regression, so this is the textbook case for **grouped-map `applyInPandas`**: the regression runs on the executors, one seller-group at a time, and never collects the full set to the driver — the scalable form of split-apply-combine.""")
+The window-based `sentiment_trend_6wk` compares only the last two 6-week windows. A complementary view fits an ordinary-least-squares line through each seller's entire weekly-sentiment history and reads off the slope (stars/week). There is no native Spark function for a per-group regression, so this is the textbook case for grouped-map `applyInPandas`: the regression runs on the executors, one seller-group at a time, and never collects the full set to the driver. That is the scalable form of split-apply-combine.""")
 
 code('''from olist.pipeline.sentiment import seller_sentiment_slopes
 
@@ -754,12 +741,12 @@ viz.styled_topn_table(
 )
 ''')
 
-md("""**Read this as.** Each row is a seller whose review scores are trending *down* fastest across their whole history (most-negative slope). Unlike the two-window `sentiment_trend_6wk`, the slope is robust to a single noisy fortnight — it needs a sustained drift. These are early-warning candidates even when their *current* average still looks acceptable. The computation is a genuine per-group regression, the kind of thing `applyInPandas` exists for.""")
+md("""Each row is a seller whose review scores are trending down fastest across their whole history (most-negative slope). Unlike the two-window `sentiment_trend_6wk`, the slope is robust to a single noisy fortnight because it needs a sustained drift. These are early-warning candidates even when their current average still looks acceptable.""")
 
 
 md("""#### 4.7.4 Lead-indicator analysis
 
-For each lag *k* ∈ {0, 1, …, 8} weeks, we compute the Pearson correlation between weekly *sentiment change* and weekly *volume change shifted by k*. The peak |ρ| answers: *does sentiment lead volume, and at what horizon?*""")
+For each lag *k* ∈ {0, 1, …, 8} weeks, we compute the Pearson correlation between weekly sentiment change and weekly volume change shifted by *k*. The peak |ρ| answers whether sentiment leads volume, and at what horizon.""")
 
 code('''from olist.pipeline.sentiment import build_lead_indicator_lags, peak_lag
 
@@ -773,7 +760,7 @@ lag_pd = lag_df.toPandas()
 viz.lag_corr_bar(lag_pd)
 ''')
 
-md("""**What this means. Honest finding.** The peak |ρ| ≈ 0.015 at lag = 7 weeks. **Sentiment is *not* a strong leading indicator of volume at this sample size.** We report this honestly in the recommendations (§7) rather than overclaim. The weekly rollup is still valuable as a *trend* signal *within* the risk index, declining sentiment co-located with declining demand and high network centrality is a stronger composite signal than any one component alone.""")
+md("""Honest finding: peak |ρ| ≈ 0.015 at lag 7 weeks, so sentiment is **not** a strong leading indicator of volume at this sample size. We report that in the §7 recommendations rather than overclaim. The weekly rollup is still valuable as a trend signal *within* the risk index, since declining sentiment alongside declining demand and high network centrality is a stronger composite signal than any one component alone.""")
 
 
 md("""### 4.8 Interpretation. Per-seller scores + deployment view
@@ -808,17 +795,12 @@ viz.styled_topn_table(
 )
 ''')
 
-md("""**What this tells us.** These ten sellers are the highest-priority outreach candidates from the sentiment lens alone. The bar shows the magnitude of decline; the colour gradient shows their current negative-review rate (so a strong decliner who is *also* already at high `pct_negative_reviews` is the operationally-most-urgent case).""")
+md("""These ten are the highest-priority outreach candidates from the sentiment lens alone. The bar shows the magnitude of decline and the colour gradient shows current negative-review rate, so a strong decliner who is also already high on `pct_negative_reviews` is the most urgent case.""")
 
 
-md("""### 🎯 Sub-Analysis 2. Key Takeaways
+md("""### Key takeaways
 
-- **The classifier works.** LogReg best test AUC 0.9564 (3-fold CV; best params `regParam=0.1, elasticNetParam=0.0`); LSTM test AUC 0.9619 (LSTM beats baseline by ~half a point, both well above the 0.90 success bar).
-- **The LSTM runs *inside Spark*.** Trained via `TorchDistributor(local_mode=True)` (state-dict round-trip) and scored via `predict_batch_udf` (distributed inference) — the Spark–deep-learning integration pattern, not a bare driver loop.
-- **Confusion matrix confirms minority-class utility.** Both classes are recovered with high recall, the classifier is genuinely useful on the operationally-important negative class, despite class imbalance.
-- **Per-seller trend two ways.** `sentiment_trend_6wk` (Window-based, last two 6-week windows) reaches the deployment parquet; a complementary whole-history OLS slope via grouped-map `applyInPandas` (§4.7.3) cross-checks it. Plus `pct_negative_reviews` (current state).
-- **Honest lead-indicator finding.** Sentiment is *not* a strong leading indicator of volume in this sample — peak cross-correlation |ρ| ≈ 0.015 at lag 7w. Reported as a caveat, not a headline. The trend signal is still useful *as a component of the composite risk index* in §6.
-- **Honest limitation.** ~58% of reviews have no text and are excluded from the NLP pipeline; they still contribute to the trend rollup via their numeric score, which is the right blend.""")
+Both classifiers clear the 0.90 bar: LogReg reaches a best test AUC of 0.9564 under 3-fold CV (best params `regParam=0.1, elasticNetParam=0.0`) and the LSTM edges it at 0.9619. The LSTM runs inside Spark, trained via `TorchDistributor(local_mode=True)` and scored via `predict_batch_udf`, the integration pattern rather than a bare driver loop. The confusion matrix confirms the classifier is genuinely useful on the operationally-important negative class despite the imbalance. We carry the per-seller trend two ways: the Window-based `sentiment_trend_6wk` reaches the deployment parquet, cross-checked by a whole-history OLS slope via grouped-map `applyInPandas` (§4.7.3), alongside `pct_negative_reviews`. The honest caveat is that sentiment does not lead volume in this sample (peak |ρ| ≈ 0.015 at lag 7w), so the trend feeds the §6 composite as a component, not a standalone trigger. And ~58% of reviews have no text and sit out of the NLP pipeline, though they still contribute to the trend rollup via their numeric score.""")
 
 
 # ===========================================================================
@@ -826,23 +808,23 @@ md("""### 🎯 Sub-Analysis 2. Key Takeaways
 # ===========================================================================
 md("""## 5. Sub-Analysis 3. Supply-Network Graph
 
-The third and final sub-analysis. Same eight-substep skeleton: framing → EDA → cleaning → preprocessing → feature engineering → modelling → evaluation → interpretation, closing with **Key Takeaways**. The PySpark primitive on display here is **GraphFrames**. We run the full battery on the bipartite customer↔seller graph (PageRank, connected components, motif-finding, BFS, induced subgraph), then **project onto a seller↔seller co-customer graph** where the genuinely graph-unique signals live — a substitutability deficit and label-propagation communities the tabular analyses cannot produce.""")
+The third and final sub-analysis, same eight substeps. The PySpark primitive on display here is **GraphFrames**. We run the full battery on the bipartite customer↔seller graph (PageRank, connected components, motif-finding, BFS, induced subgraph), then project onto a seller↔seller co-customer graph where the genuinely graph-unique signals live: a substitutability deficit and label-propagation communities the tabular analyses cannot produce.""")
 
 
 md("""### 5.1 Problem framing
 
-**Sub-research question.** *Which sellers are structural single-points-of-failure. I.e. Their disappearance would disrupt the most customers, and who could absorb their demand if they failed?*
+**Sub-research question.** *Which sellers are structural single-points-of-failure, where their disappearance would disrupt the most customers, and who could absorb their demand if they failed?*
 
 **Success criteria.**
-- A **substitutability deficit per seller** — high impact (many customers) with few substitute sellers = a structural single-point-of-failure. This is the signal that reaches the §6 risk index.
-- A **backup seller for every seller** (not just the hubs), so the recommendation engine has an "if X fails, route to Y" lookup.
-- **Substitution communities** — clusters of mutually-substitutable sellers, via label propagation on the projected graph.
-- A **delayed-subgraph PageRank** isolating sellers central to the *late-shipping* part of the network — the contagion-risk signal, blended 50/50 with the deficit into the network axis.
+- A substitutability deficit per seller: high impact (many customers) with few substitute sellers signals a structural single-point-of-failure. This is the signal that reaches the §6 risk index.
+- A backup seller for every seller (not just the hubs), so the recommendation engine has an "if X fails, route to Y" lookup.
+- Substitution communities: clusters of mutually-substitutable sellers, via label propagation on the projected graph.
+- A delayed-subgraph PageRank isolating sellers central to the late-shipping part of the network, the contagion-risk signal, blended 50/50 with the deficit into the network axis.
 
 **Method-choice rationale.**
-- **GraphFrames over `networkx`.** GraphFrames runs on the JVM, scales horizontally, and survives a 100× scale-up unchanged. `networkx` would be 10× slower at this size and unusable at 1 M vertices.
-- **Project to a seller↔seller graph for the risk signal.** On the bipartite graph with unit-ish edges, PageRank degenerates to a degree proxy (we show it tracks in-degree at r≈1.0 in §5.5.4). Centrality, communities, and the deficit are computed on the co-customer projection, where they measure substitution structure rather than raw customer count.
-- **`connectedComponents(algorithm="graphx")` over the default message-passing variant.** The default OOM'd the JVM heap on this graph at 6 GB driver memory (logged in `decisions_log.md` 2026-04-22 NB3 entry); GraphX CC is more memory-efficient and completes in seconds.
+- **GraphFrames over `networkx`.** GraphFrames runs on the JVM, scales horizontally, and survives a 100x scale-up unchanged. `networkx` would be 10x slower at this size and unusable at 1 M vertices.
+- **Project to a seller↔seller graph for the risk signal.** On the bipartite graph with unit-ish edges, PageRank degenerates to a degree proxy (it tracks in-degree at r≈1.0, shown in §5.5.4). Centrality, communities, and the deficit are computed on the co-customer projection, where they measure substitution structure rather than raw customer count.
+- **`connectedComponents(algorithm="graphx")` over the default message-passing variant.** The default OOM'd the JVM heap on this graph at 6 GB driver memory (logged in `decisions_log.md`, 2026-04-22 NB3 entry); GraphX CC is more memory-efficient and completes in seconds.
 - **Bidirectional edges (`purchase` + `serves`).** Required so PageRank flows both ways and BFS can reach other sellers via shared customers.""")
 
 
@@ -866,7 +848,7 @@ print(f"edges total: {edges.count():,}")
 edges.groupBy("edge_type").agg(F.count("*").alias("n")).orderBy("edge_type").show()
 ''')
 
-md("""**What this means.** The graph is roughly **sellers + 95k unique customers** with **~200k bidirectional edges**. The customer side dominates the vertex count by ~30×; PageRank's behaviour on this kind of bipartite-ish graph depends on letting flow pass both ways through the customer "super-nodes," which is why bidirectional edges are required.""")
+md("""The graph is roughly sellers plus 95k unique customers with ~200k bidirectional edges. The customer side dominates the vertex count by about 30x. PageRank's behaviour on this kind of bipartite-ish graph depends on flow passing both ways through the customer "super-nodes," which is why bidirectional edges are required.""")
 
 
 md("""### 5.3 Cleaning. Geolocation aggregation
@@ -888,7 +870,7 @@ print("\\nTop 5 sellers by purchase-only in-degree:")
 seller_degrees.orderBy(F.col("in_degree_purchase_only").desc()).limit(5).show()
 ''')
 
-md("""**Read this as:** A few sellers serve dramatically more customers than the median. The marketplace has clear "anchor sellers." This skew is what makes PageRank discriminative below: a small number of nodes will rank far above the rest.""")
+md("""A few sellers serve dramatically more customers than the median, so the marketplace has clear anchor sellers. That skew is what makes PageRank discriminative below: a small number of nodes rank far above the rest.""")
 
 
 md("""### 5.5 Feature engineering. Graph metrics""")
@@ -915,12 +897,12 @@ print(f"isolated sellers:           {isolated_sellers.count():,}")
 print(f"distinct components total:  {cc_with_size.select('component').distinct().count():,}")
 ''')
 
-md("""**So what?** A seller with `component_size == 1` would be *truly* isolated — no shared customers with anyone. In practice the bipartite graph is one giant component with **0 isolated sellers**, so this is a sanity check, not a finding. The substitution question it *can't* answer — "which sellers can actually replace each other?" — is what the co-customer projection in §5.5.4 (label-propagation communities) handles instead. The component-size distribution is rendered in §5.7.3.""")
+md("""A seller with `component_size == 1` would be truly isolated, sharing customers with no one. In practice the bipartite graph is one giant component with 0 isolated sellers, so this is a sanity check, not a finding. The question it cannot answer, "which sellers can actually replace each other?", is what the co-customer projection in §5.5.4 (label-propagation communities) handles instead. The component-size distribution is in §5.7.3.""")
 
 
 md("""#### 5.5.3 Motif `(a)→c←(b)`. Shared-customer seller pairs
 
-Two sellers `a` and `b` sharing a customer `c` via two `serves` edges. Deduped with `a.id < b.id`. Captures the substitutability relation: if `a` fails, `b` already serves many of `a`'s customers.""")
+Two sellers `a` and `b` share a customer `c` via two `serves` edges, deduped with `a.id < b.id`. This captures the substitutability relation: if `a` fails, `b` already serves many of `a`'s customers.""")
 
 code('''from olist.pipeline.network import compute_shared_customer_motifs
 
@@ -931,7 +913,7 @@ print(f"distinct seller-pairs sharing ≥1 customer: {shared_customer_pairs.coun
 
 md("""#### 5.5.4 Co-customer projection. Centrality, communities, and a degree-proxy check
 
-The bipartite graph has a known weakness: with unit-ish edges, **PageRank on it degenerates to a degree proxy** — a seller's score is essentially "how many customers it served." To get a signal that is genuinely *graph-native* we project onto a **seller↔seller graph**: two sellers are linked when they share customers (edge weight = shared-customer count, kept at ≥2 to drop coincidences), built straight from the §5.5.3 motif output.""")
+The bipartite graph has a known weakness: with unit-ish edges, PageRank on it degenerates to a degree proxy, where a seller's score is essentially "how many customers it served." To get a genuinely graph-native signal we project onto a seller↔seller graph: two sellers are linked when they share customers (edge weight = shared-customer count, kept at ≥2 to drop coincidences), built straight from the §5.5.3 motif output.""")
 
 code('''from olist.pipeline.network import (
     build_cocustomer_edges, compute_cocustomer_centrality,
@@ -969,7 +951,7 @@ viz.styled_topn_table(
 )
 ''')
 
-md("""**Read this as.** Bipartite `pagerank_score` correlates with in-degree at ~1.0 — it *is* a degree proxy, kept only as a sanity ranking. `substitutability_deficit` correlates far more weakly (~0.4): a genuine degree×neighbourhood interaction (high impact AND few substitutes) that no single `groupBy` produces. That deficit is the graph-unique signal feeding the §6 network axis. The scatter makes the non-relationship visible — high-degree sellers spread across the whole centrality range rather than sitting on a line.""")
+md("""Bipartite `pagerank_score` correlates with in-degree at ~1.0: it *is* a degree proxy, kept only as a sanity ranking. `substitutability_deficit` correlates far more weakly (~0.4), a genuine degree-by-neighbourhood interaction (high impact AND few substitutes) that no single `groupBy` produces. That deficit is the graph-unique signal feeding the §6 network axis. The scatter makes the non-relationship visible: high-degree sellers spread across the whole centrality range rather than sitting on a line.""")
 
 code('''# BIG-DATA-SAFETY-ESCAPE: PLOTLY_STATIC_VIZ — 1000-row sample for the scatter
 proof_pd = (
@@ -988,7 +970,7 @@ viz.quadrant_scatter(
 )
 ''')
 
-md("""**Substitution communities.** Label propagation on the projection groups sellers into communities that can absorb each other's demand — the actionable replacement for the connected-components result. The largest communities are the densest substitution clusters; a CRITICAL seller alone in a small community is far harder to back up than one in a large cluster.""")
+md("""Label propagation on the projection groups sellers into communities that can absorb each other's demand, the actionable replacement for the connected-components result. The largest communities are the densest substitution clusters; a CRITICAL seller alone in a small community is far harder to back up than one in a large cluster.""")
 
 code('''# BIG-DATA-SAFETY-ESCAPE: PLOTLY_STATIC_VIZ — top-10 community sizes
 top_comm_pd = (
@@ -1009,7 +991,7 @@ md("""### 5.6 Modelling. BFS backups + delayed-subgraph PageRank""")
 
 md("""#### 5.6.1 BFS. Nearest alternative seller for each top-PageRank seller
 
-For each of the top-10 PageRank sellers, BFS with `maxPathLength=3` returns the *nearest other seller* via shared customers. That seller is the deployment-ready "backup." Two flagged escapes (`TOP10_PAGERANK_DRIVER` for the 10-row driver list, `BFS_BACKUP_COLLECT` for the per-seed `limit(1).collect()`), both capped by construction.""")
+For each of the top-10 PageRank sellers, BFS with `maxPathLength=3` returns the nearest other seller via shared customers, the deployment-ready "backup." Two flagged escapes here (`TOP10_PAGERANK_DRIVER` for the 10-row driver list, `BFS_BACKUP_COLLECT` for the per-seed `limit(1).collect()`) are both capped by construction.""")
 
 code('''from olist.pipeline.network import compute_bfs_backups
 
@@ -1019,7 +1001,7 @@ backup_df.show(truncate=False)
 
 md("""#### 5.6.2 Delayed-subgraph PageRank. Contagion centrality
 
-Induced subgraph over edges where `avg_delay > 5`; rerun PageRank there. Sellers ranking high in the delayed subgraph are *structurally central to the late-shipping part of the marketplace*, i.e. The contagion-risk hubs.""")
+Induced subgraph over edges where `avg_delay > 5`, with PageRank rerun there. Sellers ranking high in the delayed subgraph are structurally central to the late-shipping part of the marketplace, the contagion-risk hubs.""")
 
 code('''from olist.pipeline.network import compute_delayed_subgraph_pagerank
 
@@ -1048,7 +1030,7 @@ viz.styled_topn_table(
 )
 ''')
 
-md("""**Takeaway.** These are the structural hubs. A failure at any of them cascades widely. They are the first candidates for proactive monitoring *regardless* of their demand or sentiment scores. The §6 risk index combines PageRank with the other two signals, but PageRank alone is already an actionable list.""")
+md("""These are the structural hubs, where a failure cascades widely. They are the first candidates for proactive monitoring regardless of their demand or sentiment scores. The §6 risk index combines PageRank with the other two signals, but PageRank alone is already an actionable list.""")
 
 
 md("""#### 5.7.2 Top-20 seller pairs by shared customers""")
@@ -1069,7 +1051,7 @@ viz.styled_topn_table(
 )
 ''')
 
-md("""**Operational read.** Substitutability map. These pairs are the strongest natural backup relationships in the marketplace. If seller A fails, seller B already serves many of A's customers and could absorb the demand with minimal friction. §5.5.4's `compute_backup_map` turns this into a per-seller lookup for *every* seller (not just the top-20 pairs shown here), and that `backup_seller_id` / `backup_strength` reaches the risk index, where a non-SAFE seller with no backup is flagged for escalation.""")
+md("""These pairs are the strongest natural backup relationships in the marketplace. If seller A fails, seller B already serves many of A's customers and could absorb the demand with minimal friction. The §5.5.4 `compute_backup_map` turns this into a per-seller lookup for every seller, not just the top-20 pairs shown here, and that `backup_seller_id` / `backup_strength` reaches the risk index, where a non-SAFE seller with no backup is flagged for escalation.""")
 
 
 md("""#### 5.7.3 Component-size distribution""")
@@ -1094,12 +1076,12 @@ viz.state_bar(
 )
 ''')
 
-md("""**Translation:** The marketplace is dominated by **one giant connected component** containing essentially every active seller and customer. This is the *good* topology for a marketplace; it means the recommendation engine could in principle route customers from any seller to any other. The opposite finding (many small islands) would have implied serious geographic or category fragmentation. CC is a sanity check; the more interesting graph-native question is *how far* the structural hubs are from their nearest substitute, which is what the next subsection answers via BFS path length.""")
+md("""The marketplace is dominated by one giant connected component containing essentially every active seller and customer. That is the good topology for a marketplace: the recommendation engine could in principle route customers from any seller to any other. The opposite finding (many small islands) would have implied serious geographic or category fragmentation. CC is a sanity check; the more interesting graph-native question is how far the structural hubs are from their nearest substitute, which the next subsection answers via BFS path length.""")
 
 
-md("""#### 5.7.4 Backup distance — how far is each hub from its nearest substitute?
+md("""#### 5.7.4 Backup distance: how far is each hub from its nearest substitute?
 
-A per-seller property that does not exist outside the graph view: for each top-PageRank seller, the *number of hops* through shared customers to the nearest alternative seller. A hub with hop count 1 has a direct competitor sharing the same customer base; hop count 3 means the nearest substitute is two customers and another seller away (much weaker substitutability). The distribution below is the structural-substitutability profile of the marketplace's hubs.""")
+A per-seller property that does not exist outside the graph view: for each top-PageRank seller, the number of hops through shared customers to the nearest alternative seller. Hop count 1 means a direct competitor sharing the same customer base; hop count 3 means the nearest substitute is two customers and another seller away (much weaker substitutability). The distribution below is the structural-substitutability profile of the marketplace's hubs.""")
 
 code('''# BIG-DATA-SAFETY-ESCAPE: PLOTLY_STATIC_VIZ — 3-row aggregate of a 10-row BFS table
 import pandas as pd
@@ -1126,12 +1108,12 @@ viz.state_bar(
 )
 ''')
 
-md("""**Read this as:** Concentration at hop count 1 means hubs are well-substituted (every top seller already has a direct competitor sharing customers); concentration at 2-3 hops means the marketplace is exposed if those hubs fail, because the nearest substitute is structurally far. This number is a function of the graph topology, not of any tabular feature — `groupBy("customer_unique_id")` cannot answer "what is the shortest substitution chain from this seller to any other seller?" without traversal.""")
+md("""Concentration at hop count 1 means hubs are well-substituted (every top seller already has a direct competitor sharing customers); concentration at 2 to 3 hops means the marketplace is exposed if those hubs fail, because the nearest substitute is structurally far. This is a function of the graph topology, not of any tabular feature: `groupBy("customer_unique_id")` cannot answer "what is the shortest substitution chain from this seller to any other?" without traversal.""")
 
 
 md("""### 5.8 Interpretation. Per-seller scores + deployment view
 
-The deployable parquet `outputs/nb3_seller_network_scores.parquet` carries `pagerank_score`, `in_degree`, `is_isolated`, `cocustomer_centrality`, `community_id`, `backup_seller_id`, `backup_strength`, `n_cocustomer_partners`, `substitutability_deficit`, and `network_risk_score` (= delayed-subgraph PageRank). The deficit and the delayed-subgraph contagion are the two halves the §6 network axis blends.""")
+The deployable parquet `outputs/nb3_seller_network_scores.parquet` carries `pagerank_score`, `in_degree`, `is_isolated`, `cocustomer_centrality`, `community_id`, `backup_seller_id`, `backup_strength`, `n_cocustomer_partners`, `substitutability_deficit`, and `network_risk_score` (delayed-subgraph PageRank). The deficit and the delayed-subgraph contagion are the two halves the §6 network axis blends.""")
 
 code('''seller_network_scores = build_seller_network_scores(spark)
 print(f"seller_network_scores rows: {seller_network_scores.count():,}")
@@ -1162,17 +1144,12 @@ viz.styled_topn_table(
 )
 ''')
 
-md("""**The point.** These ten sellers are the **contagion hubs**: structurally central to the part of the network where deliveries arrive late. An account manager should prioritise these for operational review. Any service improvement here has network-wide spillover. The `pagerank_score` gradient shows how their *general* importance compares to their *delayed-subgraph* importance; a seller that is high on both is the most operationally critical case.""")
+md("""These ten are the contagion hubs, structurally central to the part of the network where deliveries arrive late, so any service improvement here has network-wide spillover. The `pagerank_score` gradient shows how their general importance compares to their delayed-subgraph importance; a seller high on both is the most operationally critical case.""")
 
 
-md("""### 🎯 Sub-Analysis 3. Key Takeaways
+md("""### Key takeaways
 
-- **Bipartite PageRank is a degree proxy — and we say so.** It tracks raw in-degree at r≈1.0, so we keep it only as a sanity ranking. The graph-unique value comes from the seller↔seller projection, not from centrality on the bipartite graph.
-- **Substitutability deficit is the real signal.** High impact with few substitutes = single-point-of-failure. It correlates with in-degree at only ~0.4, so it is *not* recoverable from a `groupBy`, and it is what feeds the §6 network axis (blended 50/50 with delayed-subgraph contagion).
-- **Backup seller for every seller.** The motif map is operationalised into a per-seller `backup_seller_id` + `backup_strength` lookup; a non-SAFE seller with no backup is flagged `escalate_no_backup`.
-- **Substitution communities replace the dead isolation finding.** Label propagation surfaces clusters that can absorb each other's demand — actionable where connected-components (one giant component) was not.
-- **Delayed-subgraph PageRank flags the contagion-risk tail.** Sellers central to the late-shipping subgraph are operational priorities for §7.
-- **Honest limitation.** Edges are item-count weighted, not revenue weighted; a value-weighted projection could shift which sellers count as structurally critical.""")
+Bipartite PageRank tracks raw in-degree at r≈1.0, and we say so: it is a degree proxy, kept only as a sanity ranking. The graph-unique value comes from the seller↔seller projection. The real signal is `substitutability_deficit` (high impact with few substitutes), which correlates with in-degree at only ~0.4, so it is not recoverable from a `groupBy`, and it feeds the §6 network axis blended 50/50 with delayed-subgraph contagion. The motif map is operationalised into a per-seller `backup_seller_id` + `backup_strength` lookup, with a non-SAFE seller lacking any backup flagged `escalate_no_backup`. Label-propagation substitution communities replace the dead isolation finding by surfacing clusters that can absorb each other's demand, and delayed-subgraph PageRank flags the contagion-risk tail for §7. The honest limitation: edges are item-count weighted, not revenue weighted, so a value-weighted projection could shift which sellers count as structurally critical.""")
 
 
 # ===========================================================================
@@ -1186,7 +1163,7 @@ Five views in this section:
 
 1. **§6.1 Convergence. The Seller Risk Index.** Inner-join the three per-seller parquets, normalise each component, weight `0.35 · demand + 0.35 · sentiment + 0.30 · network`, band into SAFE / WARNING / CRITICAL.
 2. **§6.2 Correlation between the three signals**, are they measuring overlapping things, or genuinely orthogonal risks?
-3. **§6.3 Risk archetypes** — K-Means clustering in the (demand, sentiment, network) space surfaces *which kind* of risk dominates each seller. (Pure-Spark MLlib KMeans, k=4.)
+3. **§6.3 Risk archetypes.** K-Means clustering in the (demand, sentiment, network) space surfaces which kind of risk dominates each seller (pure-Spark MLlib KMeans, k=4).
 4. **§6.4 Risk-band donut + quadrant scatter + state bar**: three management-ready visuals.
 5. **§6.5 Top-20 highest-risk sellers**. The actual intervention short-list.""")
 
@@ -1214,11 +1191,11 @@ p99 = risk.approxQuantile("risk_score", [0.99], 0.001)[0]
 print(f"\\nrisk_score max = {score_max:.3f}  |  p99 = {p99:.3f}  |  CRITICAL bar = {RISK_CRITICAL_THRESHOLD}")
 ''')
 
-md("""**How to read this.** Three observations:
+md("""Three observations:
 
-- **No seller crosses CRITICAL — and here is *why*, not just *that*.** The printout shows the single worst seller's `risk_score` sits below the `0.75` bar (and the 99th percentile far below it). Structurally this is expected: `risk_score` is a 0.35/0.35/0.30 weighted average of three components each clamped to [0, 1], so reaching 0.75 requires a seller to be near-worst on *most* axes simultaneously. Real sellers tend to fail on *one* axis (late delivery **or** poor sentiment **or** structural fragility), which lands them high in WARNING, not CRITICAL. The empty CRITICAL band is therefore a genuine finding about how risk distributes (it is rarely compound), not a mis-set threshold — the WARNING band carries the entire actionable tail. §7.4 notes how a more concentrated marketplace would push sellers across the line.
-- **Inner-join is intentional.** A seller has to appear in *all three* sub-analyses to score (≈3,000 of ≈3,090 sellers do). Sellers missing from one analysis (e.g. Zero reviews) are excluded; they would generate noise rather than signal in the composite.
-- **Equal-weighted demand and sentiment.** The 0.35 / 0.35 split treats the two operational signals as equally important; network risk gets 0.30 because it is more structural (slow-moving) than per-week-actionable.""")
+- **No seller crosses CRITICAL, and here is why, not just that.** The printout shows the single worst seller's `risk_score` sits below the `0.75` bar, with the 99th percentile far below it. Structurally this is expected: `risk_score` is a 0.35/0.35/0.30 weighted average of three components each clamped to [0, 1], so reaching 0.75 requires a seller to be near-worst on most axes at once. Real sellers tend to fail on one axis (late delivery, or poor sentiment, or structural fragility), which lands them high in WARNING, not CRITICAL. The empty CRITICAL band is therefore a genuine finding about how risk distributes (it is rarely compound), not a mis-set threshold, and the WARNING band carries the entire actionable tail. §7.4 notes how a more concentrated marketplace would push sellers across the line.
+- **Inner-join is intentional.** A seller has to appear in all three sub-analyses to score (≈3,000 of ≈3,090 do). Sellers missing from one analysis (e.g. zero reviews) are excluded; they would generate noise rather than signal.
+- **Equal-weighted demand and sentiment.** The 0.35/0.35 split treats the two operational signals as equally important; network risk gets 0.30 because it is more structural and slow-moving than per-week-actionable.""")
 
 
 md("""### 6.2 How correlated are the three signals?
@@ -1234,16 +1211,16 @@ viz.correlation_heatmap(
 )
 ''')
 
-md("""**Plain read.** The off-diagonal cells are small in magnitude. The three signals are **largely orthogonal**. This validates the composite design: each component captures a different kind of risk that the other two cannot see. (If, say, `demand_norm` and `sentiment_norm` were ρ = 0.8, the convergence layer would just be a louder version of one signal; instead they jointly cover three distinct failure modes.)""")
+md("""The off-diagonal cells are small, so the three signals are largely orthogonal. This validates the composite design: each component captures a kind of risk the other two cannot see. If `demand_norm` and `sentiment_norm` were ρ = 0.8 the convergence layer would just be a louder version of one signal; instead they jointly cover three distinct failure modes.""")
 
 
 md("""### 6.3 Risk archetypes. Which kind of risk dominates each seller?
 
-A seller with `risk_score = 0.6` could be a delivery problem, a customer-satisfaction problem, or a structural-criticality problem, same number, very different intervention. K-Means clustering in the (demand, sentiment, network) space (`pyspark.ml.clustering.KMeans`, k=4, seed=KMEANS_SEED=8825) groups sellers into four archetypes labelled by which axis dominates the cluster centroid.
+A seller with `risk_score = 0.6` could be a delivery problem, a customer-satisfaction problem, or a structural-criticality problem: same number, very different intervention. K-Means clustering in the (demand, sentiment, network) space (`pyspark.ml.clustering.KMeans`, k=4, seed=KMEANS_SEED=8825) groups sellers into four archetypes labelled by which axis dominates the cluster centroid.
 
 #### 6.3.1 Justifying k=4 — elbow + silhouette sweep
 
-Before fixing `k=4`, we sweep `k ∈ {2, 3, 4, 5, 6}` and record two complementary cluster-validation signals per run: the *within-set sum of squared errors* (`model.summary.trainingCost` — the elbow heuristic) and the **silhouette score** (`ClusteringEvaluator`, separation-vs-cohesion, higher is better). The elbow alone is a judgement call; silhouette gives an independent second opinion. The sweep is wrapped in `@step` so the parquet (`outputs/nb6_kmeans_elbow.parquet`) is cached for fast reruns.""")
+Before fixing `k=4`, we sweep `k ∈ {2, 3, 4, 5, 6}` and record two complementary cluster-validation signals per run: the within-set sum of squared errors (`model.summary.trainingCost`, the elbow heuristic) and the silhouette score (`ClusteringEvaluator`, separation vs. cohesion, higher is better). The elbow alone is a judgement call, so silhouette gives an independent second opinion. The sweep is wrapped in `@step` so the parquet (`outputs/nb6_kmeans_elbow.parquet`) is cached for fast reruns.""")
 
 code('''elbow_df = kmeans_elbow_sweep(risk)
 elbow_pd = load_kmeans_elbow(spark).orderBy("k").toPandas()
@@ -1253,7 +1230,7 @@ for _, row in elbow_pd.iterrows():
 viz.kmeans_elbow_plot(elbow_pd, chosen_k=4)
 ''')
 
-md("""**What this tells us.** WSSSE drops sharply between `k=2` and `k=4`, then plateaus — the classic elbow. The **silhouette** scores corroborate `k=4` as a sensible choice rather than an arbitrary one (it is not beaten by a wide margin at higher k, where clusters start to fragment). `k=4` also matches the operational typology we have a name for: *delay-driven*, *sentiment-driven*, *centrality-driven*, *low-risk*. Larger k would split one of these into substructures with no separate intervention story, so the count is bounded by the actionable-archetypes story, not by either metric alone.""")
+md("""WSSSE drops sharply between `k=2` and `k=4`, then plateaus: the classic elbow. The silhouette scores corroborate `k=4` as a sensible rather than arbitrary choice, since it is not beaten by a wide margin at higher k, where clusters start to fragment. `k=4` also matches the operational typology we have a name for (delay-driven, sentiment-driven, centrality-driven, low-risk). Larger k would split one of these into substructures with no separate intervention story, so the count is bounded by the actionable-archetypes story, not by either metric alone.""")
 
 
 md("""#### 6.3.2 The four archetype centroids""")
@@ -1284,14 +1261,14 @@ code('''viz.archetype_scatter(
 )
 ''')
 
-md("""**What this means.** The archetype labels are an *operational typology* of seller risk:
+md("""The archetype labels are an operational typology of seller risk:
 
-- **`delay-driven`**. High `demand_norm`. The seller's deliveries are systematically late; sentiment and network may be normal. Intervention: logistics / fleet review.
-- **`sentiment-driven`**, high `sentiment_norm`. Customers are unhappy even though the seller may be shipping on time. Intervention: product-quality or post-sales review.
-- **`centrality-driven`** — high `network_norm`. The seller is structurally important in the late-shipping subgraph; their per-seller signals may be moderate but their failure cascades widely. Intervention: dual-sourcing agreement; raise to *strategic* watchlist.
-- **`low-risk`**: the bulk of the marketplace. No action needed except routine monitoring.
+- **`delay-driven`** (high `demand_norm`): deliveries are systematically late while sentiment and network may be normal. Intervention: logistics / fleet review.
+- **`sentiment-driven`** (high `sentiment_norm`): customers are unhappy even though the seller may be shipping on time. Intervention: product-quality or post-sales review.
+- **`centrality-driven`** (high `network_norm`): structurally important in the late-shipping subgraph, with moderate per-seller signals but failure that cascades widely. Intervention: dual-sourcing agreement, raise to strategic watchlist.
+- **`low-risk`**: the bulk of the marketplace, routine monitoring only.
 
-The pairwise scatter shows the structure: each archetype occupies a distinct corner of the (demand, sentiment, network) cube. The §7 recommendations differentiate by archetype, not just by `risk_score`.""")
+The pairwise scatter shows each archetype occupying a distinct corner of the (demand, sentiment, network) cube. The §7 recommendations differentiate by archetype, not just by `risk_score`.""")
 
 
 md("""### 6.4 Risk-band donut + quadrant + state bar""")
@@ -1326,12 +1303,12 @@ viz.state_bar(
 )
 ''')
 
-md("""**Read this as:** The donut shows the global risk distribution; the quadrant exposes the top-50's positioning (demand-heavy vs sentiment-heavy with PageRank as bubble size); the state bar surfaces a couple of Brazilian states with above-mean risk. Those are the geographic targeting candidates for the §7 recommendations.""")
+md("""The donut shows the global risk distribution, the quadrant exposes the top-50's positioning (demand-heavy vs sentiment-heavy, with PageRank as bubble size), and the state bar surfaces a couple of Brazilian states above the mean. Those are the geographic targeting candidates for the §7 recommendations.""")
 
 
 md("""### 6.5 Top-20 highest-risk sellers. The intervention short-list
 
-The deployable hand-off to account management. Bar embedded on `risk_score`; gradient on the three normalised components shows *which* signal dominates each seller's placement. Read row-by-row to know not just *who* to intervene on but *what kind* of intervention.""")
+The deployable hand-off to account management. The bar is on `risk_score`, and the gradient on the three normalised components shows which signal dominates each seller's placement. Read row-by-row to know not just who to intervene on but what kind of intervention.""")
 
 code('''# BIG-DATA-SAFETY-ESCAPE: PLOTLY_STATIC_VIZ — capped to 20 rows
 top20_risk = (
@@ -1361,14 +1338,7 @@ viz.styled_topn_table(
 
 md("""### 6.6 What the three signals tell us together
 
-Reading the synthesis end-to-end:
-
-- **The three signals are orthogonal** (§6.2). The composite is a genuine multi-signal index, not a louder version of one component.
-- **The marketplace has a long-tail risk profile** (§6.4 donut), most sellers are SAFE; the operational risk concentrates in a manageable WARNING band.
-- **Risk has *kinds*, not just *amounts*** (§6.3 archetypes) — the same `risk_score` can mean very different operational realities (delivery, satisfaction, structural). The intervention plan in §7 is differentiated by archetype.
-- **The top-20 list is actionable today** (§6.5): concrete sellers, with a directional read on what's wrong (delivery / sentiment / centrality), ready for account-management triage.
-
-The cross-analysis synthesis is what makes the three sub-analyses *together* worth more than any one of them alone.""")
+Reading the synthesis end-to-end: the three signals are orthogonal (§6.2), so the composite is a genuine multi-signal index rather than a louder version of one component. The marketplace has a long-tail risk profile (§6.4 donut), with most sellers SAFE and the operational risk concentrated in a manageable WARNING band. Risk has kinds, not just amounts (§6.3 archetypes): the same `risk_score` can mean very different operational realities, which is why the §7 plan is differentiated by archetype. And the §6.5 top-20 list is actionable today, with concrete sellers and a directional read on what's wrong, ready for account-management triage. The synthesis is what makes the three sub-analyses together worth more than any one alone.""")
 
 
 # ===========================================================================
@@ -1389,26 +1359,26 @@ Six prioritised actions grounded in the numbers above. Management-ready, no jarg
    - *centrality-driven* sellers → dual-sourcing agreements + strategic-watchlist promotion (structural fix);
    - *low-risk* sellers → routine monitoring only.
 
-2. **Use the §6.5 top-20 list this week.** It's the deployable hand-off to account management; the bar + gradient on each row tells the AM *which signal* to lead the conversation with.
+2. **Use the §6.5 top-20 list this week.** It's the deployable hand-off to account management; the bar and gradient on each row tell the AM which signal to lead the conversation with.
 
 3. **Geographic targeting for delivery-risk interventions.** The §3.2.1 late-rate state bar and the §6.4 state-mean-risk bar both surface the same handful of Brazilian states with above-mean late rates. Run a focused regional seller-health sweep there before the next quarterly review.
 
-4. **Escalate the single-points-of-failure first.** The risk index flags every non-SAFE seller that has *no* viable backup (`escalate_no_backup` — high substitutability deficit). These are the sellers whose failure the marketplace cannot absorb; they need a dual-sourcing agreement before anything else. For sellers that *do* have a backup, `backup_seller_id` is the pre-computed "if X fails, route to Y" target — ready for an operations-team handoff, and now covering every seller rather than just the top-10 hubs.
+4. **Escalate the single-points-of-failure first.** The risk index flags every non-SAFE seller with no viable backup (`escalate_no_backup`, a high substitutability deficit). These are the sellers whose failure the marketplace cannot absorb, and they need a dual-sourcing agreement before anything else. For sellers that do have a backup, `backup_seller_id` is the pre-computed "if X fails, route to Y" target, ready for an operations-team handoff and now covering every seller rather than just the top-10 hubs.
 
-5. **Don't stake intervention triggers on sentiment alone.** The §4.7.3 lead-indicator finding is honest: |ρ| ≈ 0.015, sentiment is a *confirming* signal alongside delay + network risk in the composite, not a *predictive* signal in isolation.
+5. **Don't stake intervention triggers on sentiment alone.** The §4.7.3 lead-indicator finding is honest: |ρ| ≈ 0.015. Sentiment is a confirming signal alongside delay and network risk in the composite, not a predictive signal in isolation.
 
-6. **Invest in a streaming upgrade if marketplace volume grows 10×.** The entire pipeline is big-data-safe by construction (§7.3 below); moving `nb1_weekly_order_volume` to Structured Streaming converts this notebook into a continuous early-warning system without changing any of the analytical logic.""")
+6. **Invest in a streaming upgrade if marketplace volume grows 10x.** The entire pipeline is big-data-safe by construction (§7.3 below); moving `nb1_weekly_order_volume` to Structured Streaming converts this notebook into a continuous early-warning system without changing any of the analytical logic.""")
 
 
 md("""### 7.2 What the model can't see. Honest limitations
 
 Five honest gaps, in priority order:
 
-- **Promotion calendars.** The forecast has no view of marketplace-wide promotions or seller-level campaigns; large positive residuals in §3.7.3 correspond to volume spikes the feature set genuinely cannot predict. Adding a promotion-flag feature (if Olist surfaces one) would close most of this gap.
-- **Sentiment as a leading indicator is weak at this sample size.** §4.7.3 reports peak |ρ| ≈ 0.015, *sentiment does not predict volume changes meaningfully* in the Olist sample. We use it as a component of the composite risk index, not as a standalone trigger.
-- **Reviews without comments are partly invisible.** ~58% of reviews have no text and are excluded from the NLP pipeline; they still contribute to the per-seller trend rollup via their numeric score, but the LSTM and LogReg classifiers train only on the comment-bearing subset.
-- **Equal-weight bidirectional edges in the network.** §5 treats every customer-seller interaction as equal weight (item count); a value-weighted edge (revenue, profitability, frequency) could change which sellers count as *structurally important*. Worth re-running with a value-weighted edge if Olist signs off.
-- **Threshold sensitivity.** The CRITICAL/WARNING/SAFE bands (`> 0.75`, `< 0.40`) are fixed in advance, not data-fitted. The current marketplace happens to have zero CRITICAL sellers; a more concentrated risk distribution would push some sellers across the line and change the operational triage. Worth re-banding *if* Olist's marketplace composition changes materially.""")
+- **Promotion calendars.** The forecast has no view of marketplace-wide promotions or seller-level campaigns, and the large positive residuals in §3.7.3 are volume spikes the feature set genuinely cannot predict. A promotion-flag feature (if Olist surfaces one) would close most of this gap.
+- **Sentiment as a leading indicator is weak at this sample size.** §4.7.3 reports peak |ρ| ≈ 0.015: sentiment does not predict volume changes meaningfully in the Olist sample. We use it as a component of the composite, not a standalone trigger.
+- **Reviews without comments are partly invisible.** About 58% of reviews have no text and are excluded from the NLP pipeline; they still contribute to the per-seller trend rollup via their numeric score, but the LSTM and LogReg classifiers train only on the comment-bearing subset.
+- **Equal-weight bidirectional edges in the network.** §5 treats every customer-seller interaction as equal weight (item count); a value-weighted edge (revenue, profitability, frequency) could change which sellers count as structurally important. Worth re-running with a value-weighted edge if Olist signs off.
+- **Threshold sensitivity.** The CRITICAL/WARNING/SAFE bands (`> 0.75`, `< 0.40`) are fixed in advance, not data-fitted. The current marketplace happens to have zero CRITICAL sellers; a more concentrated risk distribution would push some across the line and change the triage. Worth re-banding if Olist's marketplace composition changes materially.""")
 
 
 md("""### 7.3 Big-data safety log. Inline summary
@@ -1437,7 +1407,7 @@ for rid, site in rows:
     print(f"  {rid:<24}  {site.strip()[:80]}")
 ''')
 
-md("""**So what?** Every `toPandas()` / `collect()` / non-Spark library call in the codebase is in this list, with its production-scale alternative and why each one is acceptable at this dataset size. The `checks.run_all()` aggregator below asserts that the registry, the markdown log, and the source-code annotations all stay consistent. If a contributor adds an unannotated escape, the check fails loudly.""")
+md("""Every `toPandas()`, `collect()`, and non-Spark library call in the codebase is in this list, with its production-scale alternative and why each is acceptable at this dataset size. The `checks.run_all()` aggregator below asserts that the registry, the markdown log, and the source-code annotations stay consistent; if a contributor adds an unannotated escape, the check fails loudly.""")
 
 
 md("""### 7.4 Reproducibility. Programmatic rubric checks
@@ -1455,7 +1425,7 @@ print(f"\\nRubric coverage: {n_passed}/{n_total} checks passed.")
 ''')
 
 
-md("""### 7.5 Cache manifest. Which steps ran vs. Skipped this session""")
+md("""### 7.5 Cache manifest. Which steps ran vs. skipped this session""")
 
 code('''from olist.cache import manifest_summary
 
@@ -1466,9 +1436,7 @@ for entry in summary:
 ''')
 
 
-md("""### 7.6 Environment
-
-The pinned interpreter + library versions for this run.""")
+md("""### 7.6 Environment""")
 
 code('''import pyspark, sys
 print("python:  ", sys.version.split()[0])
@@ -1487,11 +1455,11 @@ except Exception:
 
 md("""## 8. Bonus — Structured Streaming (production velocity)
 
-§2 framed the **Velocity** V by noting that the weekly Window aggregations "become Structured Streaming jobs at production velocity," and §7 recommended a streaming upgrade. This section makes that concrete: the same weekly order-volume aggregation from §3, expressed as an **incremental query over an unbounded source** instead of a one-shot batch job.
+§2 framed the **Velocity** V by noting that the weekly Window aggregations "become Structured Streaming jobs at production velocity," and §7 recommended a streaming upgrade. This section makes that concrete: the same weekly order-volume aggregation from §3, expressed as an incremental query over an unbounded source instead of a one-shot batch job.
 
-The Olist dataset is a static historical dump, so the live feed is *simulated* — we drip a sample of delivered orders into a watched directory as a sequence of micro-batch files, then a streaming query reads them as they "arrive." The mechanics (an unbounded source, a streaming aggregation, an incremental sink) are exactly what a real Olist order feed would use; only the source is faked.
+The Olist dataset is a static historical dump, so the live feed is simulated. We drip a sample of delivered orders into a watched directory as a sequence of micro-batch files, then a streaming query reads them as they "arrive." The mechanics (an unbounded source, a streaming aggregation, an incremental sink) are exactly what a real Olist order feed would use; only the source is faked.
 
-**Notebook-safe by construction:** `maxFilesPerTrigger=1` (one micro-batch per trigger, so progress is visibly incremental), and `trigger(availableNow=True)` — process every file already present, then **stop**. No infinite query, no hang.""")
+**Notebook-safe by construction:** `maxFilesPerTrigger=1` (one micro-batch per trigger, so progress is visibly incremental) and `trigger(availableNow=True)`, which processes every file already present then stops. No infinite query, no hang.""")
 
 code('''from olist.pipeline.streaming import prepare_stream_source, run_weekly_volume_stream
 
@@ -1508,14 +1476,14 @@ print(f"weeks aggregated from the stream: {weekly_stream_result.count():,}")
 weekly_stream_result.orderBy(F.col("weekly_order_count").desc()).show(8, truncate=False)
 ''')
 
-md("""**What this means.** The streaming query produced the same shape of result as the batch `nb1_weekly_order_volume` — a per-week order count — but built it *incrementally* as files arrived, holding running state across triggers. Swapping the simulated file source for a real Kafka/file feed of live orders would turn the entire Seller Risk Index into a continuous early-warning system **without changing any of the analytical logic** — which is the §7 recommendation, now demonstrated rather than asserted. (Bonus per the brief; the core pipeline above does not depend on it.)""")
+md("""The streaming query produced the same shape of result as the batch `nb1_weekly_order_volume`, a per-week order count, but built it incrementally as files arrived, holding running state across triggers. Swapping the simulated file source for a real Kafka or file feed of live orders would turn the entire Seller Risk Index into a continuous early-warning system without changing any of the analytical logic. That is the §7 recommendation, now demonstrated rather than asserted. (Bonus per the brief; the core pipeline does not depend on it.)""")
 
 
 md("""---
 
 ## End of notebook
 
-This is the complete deliverable. The project goals (§1.1), the three sub-research-questions (§1.2), the data-foundation context (§2), the three sub-analyses (§3, §4, §5), the cross-analysis synthesis (§6), the recommendations + limitations + reproducibility (§7), and the streaming bonus (§8) all live here. The codebase under `src/olist/` is the single source of truth for every transformation; this notebook is the report surface.""")
+This is the complete deliverable, running from the project goals (§1) through the data foundation (§2), the three sub-analyses (§3 to §5), the synthesis (§6), the conclusions (§7), and the streaming bonus (§8). The codebase under `src/olist/` is the single source of truth for every transformation; this notebook is the report surface.""")
 
 code('''spark.stop()
 print("Spark stopped. Main notebook complete.")
