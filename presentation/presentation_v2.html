@@ -407,9 +407,8 @@
   /* ============================================================
      SLIDE 5 — Why Spark
      ============================================================ */
-  .spark-banner {
-    background: #FFF8F3;
-    border-left: 6px solid var(--orange);
+  .spark-banner {            /* unified conclusion callout: solid black + orange + white */
+    background: var(--ink);
     padding: 24px 30px;
     margin-top: 24px;
     display: grid;
@@ -427,7 +426,7 @@
   .spark-banner .sb-num small {
     display: block;
     font-size: 12px;
-    color: var(--mute);
+    color: rgba(255,255,255,.6);
     font-weight: 800;
     letter-spacing: .18em;
     margin-top: 4px;
@@ -436,7 +435,7 @@
   .spark-banner .sb-text {
     font-size: 17px;
     line-height: 1.5;
-    color: var(--ink);
+    color: var(--paper);
   }
   .spark-banner .sb-text strong { font-weight: 800; color: var(--orange); }
 
@@ -470,7 +469,7 @@
     align-items: flex-start;
   }
   .sp-cell strong { font-weight: 800; }
-  .sp-cell--demand { font-weight: 700; color: var(--ink); flex-direction: column; gap: 9px; border-left: 6px solid transparent; }
+  .sp-cell--demand { font-weight: 700; color: var(--ink); flex-direction: column; justify-content: center; gap: 9px; border-left: 6px solid transparent; }
   .sp-cell--spark { background: #FFF8F3; align-items: center; }
   .sp-cell--spark strong { color: var(--orange); }
   .sp-cell--why { color: var(--mute); font-size: 15px; align-items: center; }
@@ -667,12 +666,12 @@
     margin-top: 6px;
     letter-spacing: .14em;
   }
-  .funnel-formula {
+  .funnel-formula {          /* unified conclusion callout: solid black + orange + white */
     margin-top: auto;
-    padding-top: 18px;
-    border-top: 1px solid var(--line);
-    font-size: 16px;
-    color: var(--ink);
+    padding: 16px 20px;
+    background: var(--ink);
+    color: var(--paper);
+    font-size: 15.5px;
     line-height: 1.5;
   }
   .funnel-formula code {
@@ -1718,7 +1717,7 @@
 
             <div class="funnel-formula">
               <strong>Each seller gets a single risk score</strong> that blends three signals — delivery, customer satisfaction, and structural importance — then lands in one of three bands.<br/>
-              <span style="font-size:13px;color:var(--mute);">No seller is <strong style="color:var(--orange)">CRITICAL</strong> this week: that needs a seller failing on all three fronts at once, which is rare. The actionable list is the <strong style="color:#B39E00">67 WARNING</strong> sellers — and the <strong>57 with no ready backup</strong> are escalated first. Late-delivery rates vary <strong>~2.4× by state</strong> (AL ~24% vs SC ~10%), so each seller is scored on its own record, not against a single national bar.</span>
+              <span style="font-size:13px;color:rgba(255,255,255,.72);">No seller is <strong style="color:var(--orange)">CRITICAL</strong> this week: that needs a seller failing on all three fronts at once, which is rare. The actionable list is the <strong style="color:#F6DA00">67 WARNING</strong> sellers — and the <strong style="color:#fff">57 with no ready backup</strong> are escalated first. Late-delivery rates vary <strong style="color:#fff">~2.4× by state</strong> (AL ~24% vs SC ~10%), so each seller is scored on its own record, not against a single national bar.</span>
             </div>
           </div>
 
