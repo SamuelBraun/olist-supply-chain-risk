@@ -967,6 +967,7 @@ viz.quadrant_scatter(
     size="substitutability_deficit", color="substitutability_deficit",
     title="Co-customer centrality vs in-degree (bubble = substitutability deficit)",
     xlabel="in-degree (customers served)", ylabel="co-customer centrality",
+    note="Each dot is a seller. The spread (not a tight line) is the point:<br>structural centrality is NOT the same as raw customer count.",
 )
 ''')
 
@@ -1289,6 +1290,8 @@ viz.quadrant_scatter(
     title="Top-50 risk quadrant — bubble = PageRank, colour = risk_score",
     xlabel="demand_norm (higher = longer avg delay)",
     ylabel="sentiment_norm (higher = worse sentiment)",
+    label_top=6,
+    label_col="seller_state",
 )
 ''')
 

@@ -412,11 +412,22 @@ def quadrant_scatter(
     title: str,
     xlabel: str | None = None,
     ylabel: str | None = None,
+    label_top: int = 0,
+    label_col: str | None = None,
+    note: str | None = None,
 ) -> go.Figure:
     """Bubble scatter for top-N seller risk views.
 
     Bubble area scales with ``size`` column, colour with ``color`` column.
     Adds median-crosshairs to split the plot into four quadrants.
+
+    Because the notebook renders static PNGs (no hover), two optional aids make
+    the chart self-contained:
+    * ``label_top`` + ``label_col``: annotate the first ``label_top`` rows
+      (``df`` assumed pre-sorted by importance) with ``<label_col> ▲<rank>`` so
+      the most important bubbles are identifiable without hover.
+    * ``note``: a corner takeaway caption (for scatters whose message is the
+      cloud shape rather than individual points).
     """
     size_max = float(df[size].max()) or 1.0
     fig = px.scatter(
@@ -431,6 +442,37 @@ def quadrant_scatter(
     )
     fig.add_hline(y=float(df[y].median()), line_dash="dash", line_color="grey", line_width=1)
     fig.add_vline(x=float(df[x].median()), line_dash="dash", line_color="grey", line_width=1)
+
+    if label_top and label_col and label_col in df.columns:
+        head = df.head(label_top).reset_index(drop=True)
+        for rank, row in head.iterrows():
+            fig.add_annotation(
+                x=float(row[x]),
+                y=float(row[y]),
+                text=f"{row[label_col]} ▲{rank + 1}",
+                showarrow=True,
+                arrowhead=2,
+                arrowsize=0.8,
+                arrowwidth=1,
+                arrowcolor="#444",
+                ax=18,
+                ay=-18,
+                font=dict(size=11, color="#111"),
+                bgcolor="rgba(255,255,255,0.85)",
+                bordercolor="#444",
+                borderwidth=1,
+                borderpad=2,
+            )
+
+    if note:
+        fig.add_annotation(
+            xref="paper", yref="paper", x=0.02, y=0.98,
+            text=note, showarrow=False, align="left",
+            font=dict(size=12, color="#333"),
+            bgcolor="rgba(255,255,255,0.85)", bordercolor="#999",
+            borderwidth=1, borderpad=5,
+        )
+
     fig.update_layout(
         title=title,
         xaxis_title=xlabel or x.replace("_", " "),
@@ -454,7 +496,11 @@ def weekly_trend_multiline(
     hue: str,
     title: str = "Weekly trend",
 ) -> go.Figure:
-    """Multi-line chart of a weekly metric across a small set of entities."""
+    """Multi-line chart of a weekly metric across a small set of entities.
+
+    Each line is tagged with its final value at the right edge, so the static
+    PNG conveys where every series ends up without needing hover.
+    """
     data = df.sort_values(x).copy()
     fig = px.line(
         data,
@@ -464,6 +510,15 @@ def weekly_trend_multiline(
         color_discrete_sequence=_CAT_PALETTE,
     )
     fig.update_traces(line=dict(width=1.8), opacity=0.9)
+    # End-of-line value labels (static charts have no hover).
+    for entity, grp in data.groupby(hue):
+        last = grp.loc[grp[x] == grp[x].max()].iloc[-1]
+        fig.add_annotation(
+            x=last[x], y=float(last[y]),
+            text=f"{float(last[y]):.2f}",
+            showarrow=False, xanchor="left", xshift=6,
+            font=dict(size=10, color="#333"),
+        )
     fig.update_layout(
         title=title,
         xaxis_title=x.replace("_", " "),
