@@ -95,10 +95,15 @@ def _gradient_css(values: pd.Series, stops: Sequence[str]) -> list[str]:
     return out
 
 
-def _show(fig: go.Figure) -> go.Figure:
-    # Jupyter renders the returned fig once via its mimebundle repr.
-    # Used to also call fig.show() here, which produced double output.
-    return fig
+def _show(fig: go.Figure) -> None:
+    # Emit ONE static PNG and return None. Returning the Figure object makes
+    # VS Code's notebook renderer display it twice (it renders both the static
+    # image and the figure's own repr); a plain image/png output renders exactly
+    # once everywhere — Jupyter, VS Code, nbconvert, and the GitHub preview.
+    from IPython.display import Image, display
+
+    display(Image(pio.to_image(fig, format="png")))
+    return None
 
 
 # ---------------------------------------------------------------------------
