@@ -249,11 +249,21 @@ def kmeans_elbow_sweep(
     so the chart in §6.3 of the notebook reads from parquet, deterministically.
     """
     from pyspark.ml.clustering import KMeans
+    from pyspark.ml.evaluation import ClusteringEvaluator
     from pyspark.ml.feature import VectorAssembler
 
     components = ["demand_norm", "sentiment_norm", "network_norm"]
     assembler = VectorAssembler(inputCols=components, outputCol="features_elbow")
     feats = assembler.transform(risk).cache()
+    # Two complementary cluster-validation signals: WSSSE (elbow) and the
+    # silhouette score (separation/cohesion, higher is better). The elbow is a
+    # heuristic; silhouette gives a defensible second opinion on k.
+    silhouette_eval = ClusteringEvaluator(
+        featuresCol="features_elbow",
+        predictionCol="cluster",
+        metricName="silhouette",
+        distanceMeasure="squaredEuclidean",
+    )
     try:
         rows = []
         for k in k_values:
@@ -265,7 +275,8 @@ def kmeans_elbow_sweep(
             )
             model = km.fit(feats)
             wssse = float(model.summary.trainingCost)
-            rows.append({"k": int(k), "wssse": wssse})
+            silhouette = float(silhouette_eval.evaluate(model.transform(feats)))
+            rows.append({"k": int(k), "wssse": wssse, "silhouette": silhouette})
     finally:
         feats.unpersist()
     spark = risk.sparkSession

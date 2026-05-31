@@ -2,6 +2,19 @@
 
 Append-only record of autonomous choices made during the build. Used as the source of truth for the oral defence ("why did you choose X?"). Keep entries short — one heading + 2–4 lines.
 
+### 2026-05-30 — Class-coverage pass (lab cross-check → 4 gaps closed)
+
+**Choice:** Cross-checked the project against all 10 weekly labs (`dhruv-pandit/bigDataAnalyticsIMSSpring`, see `docs/lab_coverage.md`). Closed four taught-but-absent techniques; deliberately skipped one.
+1. **Spark–DL integration (week 9).** Refactored the LSTM (`sentiment.py`) to train via `TorchDistributor(local_mode=True)` (self-contained worker → `state_dict` round-trip) and score the held-out set via `predict_batch_udf` (distributed inference, load-bearing — computes the reported AUC). Same result as before: **test AUC 0.9619**. The lab's actual emphasis was running PyTorch *inside* Spark, which we previously did driver-side only.
+2. **UDF family (week 6).** Added `seller_sentiment_slopes` — per-seller OLS sentiment slope via grouped-map `applyInPandas` (split-apply-combine), surfaced in §4.7.3. We previously used one plain `F.udf`.
+3. **Silhouette (week 8).** `kmeans_elbow_sweep` now also reports `ClusteringEvaluator` silhouette per k alongside WSSSE (§6.3.1).
+4. **Streaming bonus (week 12 / brief bonus).** New `pipeline/streaming.py` + §8: simulated file-source `readStream` → windowed weekly count → memory sink, `trigger(availableNow=True)` (drains then stops; nbconvert-safe). The streaming twin of `nb1_weekly_order_volume`.
+- **Skipped:** `StringIndexer`/`OneHotEncoder` (week 7/8). It would force the 45-min demand-CV refit on the last change-day; defensible to skip since the demand features are numeric by design.
+
+**Why:** "Everything done in class must be present" is the sufficient-grade bar; the lab cross-check found these as the genuine gaps. New `checks.py` assertions: `check_spark_dl_integration`, `check_applyinpandas`, `check_streaming`.
+
+**Impact:** Bug found + fixed en route — `PYSPARK_PYTHON`/`PYSPARK_DRIVER_PYTHON` were unset, so Spark workers used `/usr/bin/python3` (no torch); pinned both to `sys.executable` in `spark_session.py` (latent issue, surfaced only once an executor-side UDF imported torch). Also fixed: `fit_and_score` now caches `train_df` (the prior session's 45-min demand-CV failures were a disk-exhausting 60× shuffle, not slowness). Editing `sentiment.py`/`convergence.py` invalidates those steps' fingerprints (recompute on run); `demand.py`/`network.py` untouched → those skip. Each isolation-tested before the full run: LSTM AUC 0.9619, slopes for 1,519 sellers, stream drained 93 weekly buckets in ~16s. spark_session.py is not a step `code_dep`, so the env pin does not invalidate caches.
+
 ## Format
 ```
 ### YYYY-MM-DD — short title

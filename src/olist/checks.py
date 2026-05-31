@@ -272,6 +272,41 @@ def check_cocustomer_graph() -> CheckResult:
     )
 
 
+def check_spark_dl_integration() -> CheckResult:
+    src = _src(sentiment)
+    has_distributor = "TorchDistributor" in src
+    has_batch_udf = "predict_batch_udf" in src
+    ok = has_distributor and has_batch_udf
+    return CheckResult(
+        "Spark-DL integration (TorchDistributor + predict_batch_udf)",
+        ok,
+        f"TorchDistributor={has_distributor}, predict_batch_udf={has_batch_udf}",
+    )
+
+
+def check_applyinpandas() -> CheckResult:
+    src = _src(sentiment)
+    ok = ".applyInPandas(" in src
+    return CheckResult(
+        "Grouped-map applyInPandas (UDF family)",
+        ok,
+        "applyInPandas present in sentiment.py" if ok else "missing applyInPandas",
+    )
+
+
+def check_streaming() -> CheckResult:
+    from .pipeline import streaming
+    src = _src(streaming)
+    has_read = "readStream" in src
+    has_write = "writeStream" in src
+    ok = has_read and has_write
+    return CheckResult(
+        "Structured Streaming (readStream + writeStream)",
+        ok,
+        f"readStream={has_read}, writeStream={has_write} (streaming.py)",
+    )
+
+
 def check_parquet_artefacts() -> CheckResult:
     expected = [
         "outputs/geo_centroids.parquet",
@@ -308,6 +343,9 @@ CHECKS: tuple[Callable[[], CheckResult], ...] = (
     check_lazy_eval_documented,
     check_outlier_treatment,
     check_cocustomer_graph,
+    check_spark_dl_integration,
+    check_applyinpandas,
+    check_streaming,
     check_markdown_ratio,
     check_safety_log_consistency,
     check_parquet_artefacts,

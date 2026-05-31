@@ -29,6 +29,13 @@ from pyspark.ml.feature import HashingTF, IDF, StopWordsRemover, Tokenizer
 from pyspark.ml.tuning import CrossValidator, ParamGridBuilder
 from pyspark.sql import DataFrame, SparkSession
 from pyspark.sql import functions as F
+from pyspark.sql.types import (
+    DoubleType,
+    IntegerType,
+    StringType,
+    StructField,
+    StructType,
+)
 from pyspark.sql.window import Window
 
 from ..cache import resolve_path, step
@@ -244,45 +251,25 @@ def _encode(tokens: list[str], vocab: dict[str, int]) -> list[int]:
     return ids
 
 
-def train_lstm(text_labelled: DataFrame) -> dict:
-    """Train a small LSTM on Portuguese review text for the mandatory deep-
-    learning rubric line. Returns `{test_auc, train_loss_per_epoch, n_train,
-    n_test, vocab_size}`.
-
-    Non-Spark escape hatches in this function:
-    * `text_labelled.toPandas()`    # BIG-DATA-SAFETY-ESCAPE: LSTM_TO_PANDAS
-    * PyTorch model + training loop # BIG-DATA-SAFETY-ESCAPE: LSTM_PYTORCH
-    Both are catalogued in `docs/big_data_safety_log.md`.
+def _lstm_train_distributed(npz_path: str, params: dict):
+    """Self-contained training function launched by ``TorchDistributor`` in a
+    worker subprocess (Week-9 lab pattern: every import + class def lives inside
+    the function so it pickles to the worker, and the trained ``state_dict`` is
+    returned to the driver). Reads the encoded train arrays from ``npz_path``.
     """
     import numpy as np
     import torch
     import torch.nn as nn
+    import torch.distributed as dist
     from torch.utils.data import DataLoader, Dataset
-    from sklearn.metrics import roc_auc_score
 
-    torch.manual_seed(LSTM_SEED)
-    np.random.seed(LSTM_SEED)
+    dist.init_process_group(backend="gloo")
+    torch.manual_seed(params["seed"])
+    data = np.load(npz_path)
+    X_train, y_train = data["X_train"], data["y_train"]
+    pad_idx = params["pad_idx"]
 
-    # BIG-DATA-SAFETY-ESCAPE: LSTM_TO_PANDAS — see docs/big_data_safety_log.md
-    text_pd = text_labelled.toPandas()
-    pt_stopset = set(StopWordsRemover.loadDefaultStopWords("portuguese"))
-    tokens_pd = text_pd["text"].map(
-        lambda t: _tokenize_portuguese(t, pt_stopset)
-    )
-    vocab = _build_vocab(tokens_pd)
-
-    encoded = np.array(
-        [_encode(t, vocab) for t in tokens_pd], dtype=np.int64
-    )
-    labels = text_pd["label"].to_numpy(dtype=np.int64)
-
-    perm = np.random.permutation(len(encoded))
-    split = int(0.8 * len(encoded))
-    train_idx, test_idx = perm[:split], perm[split:]
-    X_train, y_train = encoded[train_idx], labels[train_idx]
-    X_test, y_test = encoded[test_idx], labels[test_idx]
-
-    class ReviewsDS(Dataset):
+    class _ReviewsDS(Dataset):
         def __init__(self, X, y):
             self.X, self.y = X, y
 
@@ -295,66 +282,188 @@ def train_lstm(text_labelled: DataFrame) -> dict:
                 torch.tensor(self.y[i], dtype=torch.float32),
             )
 
-    # BIG-DATA-SAFETY-ESCAPE: LSTM_PYTORCH — see docs/big_data_safety_log.md
-    class LSTMSentiment(nn.Module):
-        def __init__(
-            self,
-            vocab_size: int = LSTM_VOCAB_SIZE,
-            embed_dim: int = LSTM_EMBED_DIM,
-            hidden_dim: int = LSTM_HIDDEN_DIM,
-        ):
+    class _LSTMSentiment(nn.Module):
+        def __init__(self):
             super().__init__()
-            self.embed = nn.Embedding(vocab_size, embed_dim, padding_idx=LSTM_PAD_IDX)
-            self.lstm = nn.LSTM(embed_dim, hidden_dim, batch_first=True)
-            self.fc = nn.Linear(hidden_dim, 1)
+            self.embed = nn.Embedding(
+                params["vocab_size"], params["embed_dim"], padding_idx=pad_idx
+            )
+            self.lstm = nn.LSTM(
+                params["embed_dim"], params["hidden_dim"], batch_first=True
+            )
+            self.fc = nn.Linear(params["hidden_dim"], 1)
 
         def forward(self, x):
-            mask = (x != LSTM_PAD_IDX).unsqueeze(-1).float()
-            embedded = self.embed(x)
-            out, _ = self.lstm(embedded)
+            mask = (x != pad_idx).unsqueeze(-1).float()
+            out, _ = self.lstm(self.embed(x))
             pooled = (out * mask).sum(dim=1) / mask.sum(dim=1).clamp(min=1.0)
             return self.fc(pooled).squeeze(-1)
 
-    device = "cpu"
-    model = LSTMSentiment().to(device)
+    model = _LSTMSentiment()
     optimizer = torch.optim.Adam(model.parameters(), lr=1e-3)
     loss_fn = nn.BCEWithLogitsLoss()
-
-    train_loader = DataLoader(
-        ReviewsDS(X_train, y_train), batch_size=LSTM_BATCH_SIZE, shuffle=True
+    loader = DataLoader(
+        _ReviewsDS(X_train, y_train), batch_size=params["batch_size"], shuffle=True
     )
-    test_loader = DataLoader(
-        ReviewsDS(X_test, y_test), batch_size=LSTM_BATCH_SIZE * 2
-    )
-
-    losses: list[float] = []
-    for epoch in range(LSTM_EPOCHS):
+    losses = []
+    for _ in range(params["epochs"]):
         model.train()
         running = 0.0
-        for xb, yb in train_loader:
-            xb, yb = xb.to(device), yb.to(device)
+        for xb, yb in loader:
             optimizer.zero_grad()
-            logits = model(xb)
-            loss = loss_fn(logits, yb)
+            loss = loss_fn(model(xb), yb)
             loss.backward()
             optimizer.step()
             running += loss.item() * len(xb)
-        mean_loss = running / len(X_train)
-        losses.append(mean_loss)
-        print(f"epoch {epoch + 1}  train_loss={mean_loss:.4f}")
+        losses.append(running / len(X_train))
+    state_dict = {k: v.cpu() for k, v in model.state_dict().items()}
+    dist.destroy_process_group()
+    return {"state_dict": state_dict, "losses": losses}
 
-    model.eval()
-    scores_chunks, label_chunks = [], []
-    with torch.no_grad():
-        for xb, yb in test_loader:
-            scores_chunks.append(torch.sigmoid(model(xb.to(device))).cpu().numpy())
-            label_chunks.append(yb.numpy())
-    all_scores = np.concatenate(scores_chunks)
-    all_labels = np.concatenate(label_chunks)
-    auc = float(roc_auc_score(all_labels, all_scores))
+
+def train_lstm(text_labelled: DataFrame) -> dict:
+    """Train the deep-learning model (mandatory rubric line) the way Week 9
+    taught it — *inside Spark*, not on the bare driver:
+
+    * Training runs through ``TorchDistributor(local_mode=True)``, which launches
+      the self-contained ``_lstm_train_distributed`` worker and returns the
+      trained ``state_dict`` to the driver (distributed-training launcher +
+      state-dict round-trip).
+    * Test scoring runs through ``predict_batch_udf`` — the model is loaded once
+      per worker and the held-out set is scored as a distributed Spark batch
+      job, so the reported AUC comes from distributed inference, not a driver loop.
+
+    Returns `{test_auc, train_loss_per_epoch, n_train, n_test, vocab_size}`.
+
+    Escape hatches (catalogued in `docs/big_data_safety_log.md`):
+    * `text_labelled.toPandas()`     # BIG-DATA-SAFETY-ESCAPE: LSTM_TO_PANDAS
+    * PyTorch model + training        # BIG-DATA-SAFETY-ESCAPE: LSTM_PYTORCH
+    """
+    import os
+    import tempfile
+
+    import numpy as np
+    import torch
+    from pyspark.ml.functions import predict_batch_udf
+    from pyspark.ml.torch.distributor import TorchDistributor
+    from pyspark.sql import functions as F
+    from pyspark.sql.types import (
+        ArrayType,
+        FloatType,
+        IntegerType,
+        StructField,
+        StructType,
+    )
+
+    np.random.seed(LSTM_SEED)
+    spark = text_labelled.sparkSession
+
+    # BIG-DATA-SAFETY-ESCAPE: LSTM_TO_PANDAS — see docs/big_data_safety_log.md
+    text_pd = text_labelled.toPandas()
+    pt_stopset = set(StopWordsRemover.loadDefaultStopWords("portuguese"))
+    tokens_pd = text_pd["text"].map(lambda t: _tokenize_portuguese(t, pt_stopset))
+    vocab = _build_vocab(tokens_pd)
+
+    encoded = np.array([_encode(t, vocab) for t in tokens_pd], dtype=np.int64)
+    labels = text_pd["label"].to_numpy(dtype=np.int64)
+
+    perm = np.random.permutation(len(encoded))
+    split = int(0.8 * len(encoded))
+    train_idx, test_idx = perm[:split], perm[split:]
+    X_train, y_train = encoded[train_idx], labels[train_idx]
+    X_test, y_test = encoded[test_idx], labels[test_idx]
+
+    params = {
+        "seed": LSTM_SEED,
+        "vocab_size": LSTM_VOCAB_SIZE,
+        "embed_dim": LSTM_EMBED_DIM,
+        "hidden_dim": LSTM_HIDDEN_DIM,
+        "pad_idx": LSTM_PAD_IDX,
+        "epochs": LSTM_EPOCHS,
+        "batch_size": LSTM_BATCH_SIZE,
+    }
+
+    workdir = tempfile.mkdtemp(prefix="olist_lstm_")
+    npz_path = os.path.join(workdir, "train.npz")
+    np.savez(npz_path, X_train=X_train, y_train=y_train)
+
+    # BIG-DATA-SAFETY-ESCAPE: LSTM_PYTORCH — distributed training launcher
+    result = TorchDistributor(
+        num_processes=1, local_mode=True, use_gpu=False
+    ).run(_lstm_train_distributed, npz_path, params)
+    state_dict, losses = result["state_dict"], result["losses"]
+
+    state_path = os.path.join(workdir, "lstm_state.pt")
+    torch.save(state_dict, state_path)
+
+    # Distributed inference on the held-out set via predict_batch_udf.
+    test_schema = StructType([
+        StructField("seq", ArrayType(IntegerType()), False),
+        StructField("label", IntegerType(), False),
+    ])
+    test_rows = [
+        (X_test[i].tolist(), int(y_test[i])) for i in range(len(X_test))
+    ]
+    test_sdf = spark.createDataFrame(test_rows, schema=test_schema)
+
+    # predict_batch_udf factory — defined as a LOCAL closure so cloudpickle
+    # ships it to executors by value (the `olist` package is not importable on
+    # Spark workers; a module-level reference would raise ModuleNotFoundError).
+    # local_mode only: workers share the driver's filesystem, so `state_path` is
+    # readable; on a real cluster you'd broadcast the weights or use a shared FS.
+    def _make_predict():
+        import numpy as _np
+        import torch as _torch
+        import torch.nn as _nn
+
+        _pad = params["pad_idx"]
+
+        class _LSTM(_nn.Module):
+            def __init__(self):
+                super().__init__()
+                self.embed = _nn.Embedding(
+                    params["vocab_size"], params["embed_dim"], padding_idx=_pad
+                )
+                self.lstm = _nn.LSTM(
+                    params["embed_dim"], params["hidden_dim"], batch_first=True
+                )
+                self.fc = _nn.Linear(params["hidden_dim"], 1)
+
+            def forward(self, x):
+                mask = (x != _pad).unsqueeze(-1).float()
+                out, _ = self.lstm(self.embed(x))
+                pooled = (out * mask).sum(dim=1) / mask.sum(dim=1).clamp(min=1.0)
+                return self.fc(pooled).squeeze(-1)
+
+        _model = _LSTM()
+        _model.load_state_dict(_torch.load(state_path))
+        _model.eval()
+
+        def _predict(batch):
+            with _torch.no_grad():
+                x = _torch.from_numpy(_np.asarray(batch, dtype=_np.int64))
+                return _torch.sigmoid(_model(x)).numpy().astype("float32")
+
+        return _predict
+
+    # input_tensor_shapes: the `seq` column is a fixed-length (max_len,) array,
+    # so predict_batch_udf needs its per-row shape to reshape the flat batch.
+    score_udf = predict_batch_udf(
+        _make_predict,
+        return_type=FloatType(),
+        batch_size=256,
+        input_tensor_shapes=[[LSTM_MAX_LEN]],
+    )
+    scored = test_sdf.withColumn("score", score_udf(F.col("seq")))
+    # ≤9k-row test set; collect (score,label) pairs for the AUC metric only.
+    # BIG-DATA-SAFETY-ESCAPE: SMALL_SUMMARY_COLLECT — held-out scores for AUC
+    from sklearn.metrics import roc_auc_score
+
+    scored_pd = scored.select("score", "label").toPandas()
+    auc = float(roc_auc_score(scored_pd["label"], scored_pd["score"]))
     return {
         "test_auc": auc,
-        "train_loss_per_epoch": losses,
+        "train_loss_per_epoch": [float(x) for x in losses],
         "n_train": int(len(X_train)),
         "n_test": int(len(X_test)),
         "vocab_size": int(len(vocab) + 2),
@@ -438,6 +547,70 @@ def weekly_sentiment_rollup(reviews_with_seller: DataFrame) -> DataFrame:
         weekly_sentiment.withColumn("week_num", F.row_number().over(w_seller))
         .withColumn("rolling_6w_mean", F.avg("avg_score_week").over(w_roll6))
         .withColumn("lag_6w_mean", F.lag("rolling_6w_mean", 6).over(w_seller))
+    )
+
+
+def seller_sentiment_slopes(reviews_with_seller: DataFrame, *, min_weeks: int = 6) -> DataFrame:
+    """Per-seller sentiment *trend slope* via grouped-map ``applyInPandas``
+    (split-apply-combine): each seller's weekly-average-score series is fit with
+    an ordinary-least-squares line and the slope (stars per week) is returned.
+
+    `applyInPandas` is the scalable way to run a per-group computation that has
+    no native Spark equivalent — the regression runs on the executors, one group
+    at a time, never collecting to the driver. Sellers with `< min_weeks` weeks
+    of history are dropped (slope undefined). Complements the window-based
+    `sentiment_trend_6wk`: the slope uses a seller's whole history, not just the
+    last two 6-week windows.
+
+    Returns (seller_id, slope_per_week, n_weeks, mean_score).
+    """
+    weekly = (
+        reviews_with_seller.filter(
+            F.col("review_score").isNotNull() & F.col("seller_id").isNotNull()
+        )
+        .withColumn(
+            "year_week",
+            F.concat(
+                F.year("review_creation_date"),
+                F.lit("-"),
+                F.lpad(F.weekofyear("review_creation_date").cast("string"), 2, "0"),
+            ),
+        )
+        .groupBy("seller_id", "year_week")
+        .agg(F.avg("review_score").alias("avg_score_week"))
+    )
+
+    out_schema = StructType([
+        StructField("seller_id", StringType(), True),
+        StructField("slope_per_week", DoubleType(), True),
+        StructField("n_weeks", IntegerType(), True),
+        StructField("mean_score", DoubleType(), True),
+    ])
+
+    def _ols_slope(pdf: "pd.DataFrame") -> "pd.DataFrame":  # noqa: F821
+        import numpy as np
+        import pandas as pd
+
+        pdf = pdf.sort_values("year_week")
+        n = len(pdf)
+        seller = pdf["seller_id"].iloc[0]
+        y = pdf["avg_score_week"].to_numpy(dtype="float64")
+        if n < min_weeks:
+            return pd.DataFrame(
+                [(seller, None, n, float(y.mean()))],
+                columns=["seller_id", "slope_per_week", "n_weeks", "mean_score"],
+            )
+        x = np.arange(n, dtype="float64")
+        slope = float(np.polyfit(x, y, 1)[0])
+        return pd.DataFrame(
+            [(seller, slope, n, float(y.mean()))],
+            columns=["seller_id", "slope_per_week", "n_weeks", "mean_score"],
+        )
+
+    return (
+        weekly.groupBy("seller_id")
+        .applyInPandas(_ols_slope, schema=out_schema)
+        .filter(F.col("slope_per_week").isNotNull())
     )
 
 

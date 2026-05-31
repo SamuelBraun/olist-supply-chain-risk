@@ -666,14 +666,20 @@ for row in sorted(nlp_result["cv_avg_metrics"], key=lambda r: r["cv_avg_auc"], r
     print(f"  regParam={row['regParam']:.3f}  elasticNet={row['elasticNetParam']:.2f}  →  cv_avg_auc={row['cv_avg_auc']:.4f}")
 ''')
 
-md("""#### 4.6.2 PyTorch LSTM (deep-learning rubric line, big-data escape)
+md("""#### 4.6.2 PyTorch LSTM — trained *inside Spark* (deep-learning rubric line)
 
-**Why an LSTM, not BERT?** A pretrained Portuguese BERT (~500 MB) would be slow without a GPU and overkill at 43k comments; an LSTM trains in ≤5 min on the driver CPU and is the right complexity-budget for this dataset.
+**Why an LSTM, not BERT?** A pretrained Portuguese BERT (~500 MB) would be slow without a GPU and overkill at 43k comments; an LSTM trains in ≤5 min and is the right complexity-budget for this dataset.
 
-**Why not MLlib?** Spark ML has no native LSTM. Production-scale alternatives are `spark-nlp` (John Snow Labs) or Petastorm + PyTorch DDP. Both are over-engineering at this scale. The escape is annotated `# BIG-DATA-SAFETY-ESCAPE: LSTM_TO_PANDAS` (training-set materialisation) and `# BIG-DATA-SAFETY-ESCAPE: LSTM_PYTORCH` (the model + DataLoader loop), and catalogued in `docs/big_data_safety_log.md`.""")
+**Run *inside Spark*, not on the bare driver.** Rather than a plain driver-side training loop, this follows the Spark–deep-learning integration pattern:
+
+- **Training** goes through **`TorchDistributor(local_mode=True)`** (`pyspark.ml.torch.distributor`), which launches a self-contained worker function and returns the trained `state_dict` to the driver — the same launcher that would scale to multi-GPU/multi-node unchanged.
+- **Scoring** of the held-out set goes through **`predict_batch_udf`** (`pyspark.ml.functions`): the model is loaded once per worker and the test set is scored as a distributed Spark batch job, so the reported AUC comes from distributed inference, not a driver loop.
+
+**Why not MLlib?** Spark ML has no native LSTM. The remaining escapes — `# BIG-DATA-SAFETY-ESCAPE: LSTM_TO_PANDAS` (materialising the ~43k-row text to build the vocab) and `LSTM_PYTORCH` (the PyTorch model itself) — are annotated and catalogued in `docs/big_data_safety_log.md`. Production-scale alternatives remain `spark-nlp` or Petastorm + PyTorch DDP.""")
 
 code('''from olist.pipeline.sentiment import train_lstm_cached
 
+# Training via TorchDistributor + held-out scoring via predict_batch_udf (see src).
 lstm_metrics = train_lstm_cached(spark)
 lstm_metrics.show(truncate=False)
 lstm_row = lstm_metrics.first()
@@ -725,7 +731,33 @@ viz.weekly_trend_multiline(
 md("""**Plain read.** Most high-volume sellers cluster near 4.0–4.5 stars and stay there. Sentiment is sticky over multi-week windows. The few sellers that swing below ~3.5 are the ones the per-seller `sentiment_declining` flag will fire on. The chart also exposes Olist's data-coverage edges (the right-hand drop is sparse-data weeks, not real sentiment collapse, handled honestly in the model by the trend feature having a wide window).""")
 
 
-md("""#### 4.7.3 Lead-indicator analysis
+md("""#### 4.7.3 Per-seller sentiment trend via `applyInPandas` (split-apply-combine)
+
+The window-based `sentiment_trend_6wk` compares only the last two 6-week windows. A complementary view fits an **ordinary-least-squares line through each seller's entire weekly-sentiment history** and reads off the slope (stars/week). There is no native Spark function for a per-group regression, so this is the textbook case for **grouped-map `applyInPandas`**: the regression runs on the executors, one seller-group at a time, and never collects the full set to the driver — the scalable form of split-apply-combine.""")
+
+code('''from olist.pipeline.sentiment import seller_sentiment_slopes
+
+seller_slopes = seller_sentiment_slopes(reviews_with_seller)
+print(f"sellers with a fitted slope (>=6 weeks of history): {seller_slopes.count():,}")
+
+# BIG-DATA-SAFETY-ESCAPE: SMALL_SUMMARY_COLLECT — top/bottom 10-row slices
+steepest_decline = (
+    seller_slopes.orderBy(F.col("slope_per_week").asc()).limit(10).toPandas()
+)
+steepest_decline["seller_id"] = steepest_decline["seller_id"].str.slice(0, 10) + "…"
+viz.styled_topn_table(
+    steepest_decline,
+    bar_cols=["slope_per_week"],
+    gradient_cols=["mean_score"],
+    fmt={"slope_per_week": "{:+.4f}", "mean_score": "{:.2f}", "n_weeks": "{:d}"},
+    title="Steepest-declining sellers by OLS sentiment slope (stars/week)",
+)
+''')
+
+md("""**Read this as.** Each row is a seller whose review scores are trending *down* fastest across their whole history (most-negative slope). Unlike the two-window `sentiment_trend_6wk`, the slope is robust to a single noisy fortnight — it needs a sustained drift. These are early-warning candidates even when their *current* average still looks acceptable. The computation is a genuine per-group regression, the kind of thing `applyInPandas` exists for.""")
+
+
+md("""#### 4.7.4 Lead-indicator analysis
 
 For each lag *k* ∈ {0, 1, …, 8} weeks, we compute the Pearson correlation between weekly *sentiment change* and weekly *volume change shifted by k*. The peak |ρ| answers: *does sentiment lead volume, and at what horizon?*""")
 
@@ -782,8 +814,9 @@ md("""**What this tells us.** These ten sellers are the highest-priority outreac
 md("""### 🎯 Sub-Analysis 2. Key Takeaways
 
 - **The classifier works.** LogReg best test AUC 0.9564 (3-fold CV; best params `regParam=0.1, elasticNetParam=0.0`); LSTM test AUC 0.9619 (LSTM beats baseline by ~half a point, both well above the 0.90 success bar).
+- **The LSTM runs *inside Spark*.** Trained via `TorchDistributor(local_mode=True)` (state-dict round-trip) and scored via `predict_batch_udf` (distributed inference) — the Spark–deep-learning integration pattern, not a bare driver loop.
 - **Confusion matrix confirms minority-class utility.** Both classes are recovered with high recall, the classifier is genuinely useful on the operationally-important negative class, despite class imbalance.
-- **Two per-seller signals reach the deployment parquet.** `sentiment_trend_6wk` (Window-based 6-week direction) and `pct_negative_reviews` (current state).
+- **Per-seller trend two ways.** `sentiment_trend_6wk` (Window-based, last two 6-week windows) reaches the deployment parquet; a complementary whole-history OLS slope via grouped-map `applyInPandas` (§4.7.3) cross-checks it. Plus `pct_negative_reviews` (current state).
 - **Honest lead-indicator finding.** Sentiment is *not* a strong leading indicator of volume in this sample — peak cross-correlation |ρ| ≈ 0.015 at lag 7w. Reported as a caveat, not a headline. The trend signal is still useful *as a component of the composite risk index* in §6.
 - **Honest limitation.** ~58% of reviews have no text and are excluded from the NLP pipeline; they still contribute to the trend rollup via their numeric score, which is the right blend.""")
 
@@ -1173,11 +1206,17 @@ print(f"Thresholds: CRITICAL > {RISK_CRITICAL_THRESHOLD}, SAFE < {RISK_SAFE_THRE
 print("\\nRisk-band counts:")
 risk_band_counts(risk).show()
 print(f"Total scored sellers: {risk.count():,}")
+
+# Why is CRITICAL empty? Show where the worst sellers actually land.
+# BIG-DATA-SAFETY-ESCAPE: SMALL_SUMMARY_COLLECT — single-row + p99 quantile
+score_max = risk.agg(F.max("risk_score").alias("m")).first()["m"]
+p99 = risk.approxQuantile("risk_score", [0.99], 0.001)[0]
+print(f"\\nrisk_score max = {score_max:.3f}  |  p99 = {p99:.3f}  |  CRITICAL bar = {RISK_CRITICAL_THRESHOLD}")
 ''')
 
 md("""**How to read this.** Three observations:
 
-- **The risk-tail clusters at WARNING, not CRITICAL.** With the contract-specified threshold of `0.75`, no seller crosses into CRITICAL. The marketplace's worst sellers concentrate just *below* that bar. This is itself a finding (reported honestly in §7) and means the WARNING band carries the entire actionable tail.
+- **No seller crosses CRITICAL — and here is *why*, not just *that*.** The printout shows the single worst seller's `risk_score` sits below the `0.75` bar (and the 99th percentile far below it). Structurally this is expected: `risk_score` is a 0.35/0.35/0.30 weighted average of three components each clamped to [0, 1], so reaching 0.75 requires a seller to be near-worst on *most* axes simultaneously. Real sellers tend to fail on *one* axis (late delivery **or** poor sentiment **or** structural fragility), which lands them high in WARNING, not CRITICAL. The empty CRITICAL band is therefore a genuine finding about how risk distributes (it is rarely compound), not a mis-set threshold — the WARNING band carries the entire actionable tail. §7.4 notes how a more concentrated marketplace would push sellers across the line.
 - **Inner-join is intentional.** A seller has to appear in *all three* sub-analyses to score (≈3,000 of ≈3,090 sellers do). Sellers missing from one analysis (e.g. Zero reviews) are excluded; they would generate noise rather than signal in the composite.
 - **Equal-weighted demand and sentiment.** The 0.35 / 0.35 split treats the two operational signals as equally important; network risk gets 0.30 because it is more structural (slow-moving) than per-week-actionable.""")
 
@@ -1202,19 +1241,19 @@ md("""### 6.3 Risk archetypes. Which kind of risk dominates each seller?
 
 A seller with `risk_score = 0.6` could be a delivery problem, a customer-satisfaction problem, or a structural-criticality problem, same number, very different intervention. K-Means clustering in the (demand, sentiment, network) space (`pyspark.ml.clustering.KMeans`, k=4, seed=KMEANS_SEED=8825) groups sellers into four archetypes labelled by which axis dominates the cluster centroid.
 
-#### 6.3.1 Justifying k=4 — elbow-method sweep
+#### 6.3.1 Justifying k=4 — elbow + silhouette sweep
 
-Before fixing `k=4`, we sweep `k ∈ {2, 3, 4, 5, 6}` and record each run's *within-set sum of squared errors* (`model.summary.trainingCost`). The elbow: the point where WSSSE stops dropping sharply. Tells us how many archetypes the data actually supports. The sweep is wrapped in `@step` so the parquet (`outputs/nb6_kmeans_elbow.parquet`) is cached for fast reruns.""")
+Before fixing `k=4`, we sweep `k ∈ {2, 3, 4, 5, 6}` and record two complementary cluster-validation signals per run: the *within-set sum of squared errors* (`model.summary.trainingCost` — the elbow heuristic) and the **silhouette score** (`ClusteringEvaluator`, separation-vs-cohesion, higher is better). The elbow alone is a judgement call; silhouette gives an independent second opinion. The sweep is wrapped in `@step` so the parquet (`outputs/nb6_kmeans_elbow.parquet`) is cached for fast reruns.""")
 
 code('''elbow_df = kmeans_elbow_sweep(risk)
 elbow_pd = load_kmeans_elbow(spark).orderBy("k").toPandas()
-print("WSSSE per k:")
+print("WSSSE + silhouette per k:")
 for _, row in elbow_pd.iterrows():
-    print(f"  k={int(row['k'])}  →  WSSSE={row['wssse']:.3f}")
+    print(f"  k={int(row['k'])}  →  WSSSE={row['wssse']:.3f}   silhouette={row['silhouette']:.3f}")
 viz.kmeans_elbow_plot(elbow_pd, chosen_k=4)
 ''')
 
-md("""**What this tells us.** WSSSE drops sharply between `k=2` and `k=4`, then plateaus. The additional clusters at `k=5, 6` no longer separate meaningfully distinct groups (the marginal WSSSE reduction is small). `k=4` is the natural elbow, and it matches the operational typology we have a name for: *delay-driven*, *sentiment-driven*, *centrality-driven*, and *low-risk*. Any larger k would split one of these labels into substructures that don't have a separate intervention story, so the cluster count is bounded by the actionable-archetypes story, not by raw WSSSE alone.""")
+md("""**What this tells us.** WSSSE drops sharply between `k=2` and `k=4`, then plateaus — the classic elbow. The **silhouette** scores corroborate `k=4` as a sensible choice rather than an arbitrary one (it is not beaten by a wide margin at higher k, where clusters start to fragment). `k=4` also matches the operational typology we have a name for: *delay-driven*, *sentiment-driven*, *centrality-driven*, *low-risk*. Larger k would split one of these into substructures with no separate intervention story, so the count is bounded by the actionable-archetypes story, not by either metric alone.""")
 
 
 md("""#### 6.3.2 The four archetype centroids""")
@@ -1446,11 +1485,37 @@ except Exception:
 ''')
 
 
+md("""## 8. Bonus — Structured Streaming (production velocity)
+
+§2 framed the **Velocity** V by noting that the weekly Window aggregations "become Structured Streaming jobs at production velocity," and §7 recommended a streaming upgrade. This section makes that concrete: the same weekly order-volume aggregation from §3, expressed as an **incremental query over an unbounded source** instead of a one-shot batch job.
+
+The Olist dataset is a static historical dump, so the live feed is *simulated* — we drip a sample of delivered orders into a watched directory as a sequence of micro-batch files, then a streaming query reads them as they "arrive." The mechanics (an unbounded source, a streaming aggregation, an incremental sink) are exactly what a real Olist order feed would use; only the source is faked.
+
+**Notebook-safe by construction:** `maxFilesPerTrigger=1` (one micro-batch per trigger, so progress is visibly incremental), and `trigger(availableNow=True)` — process every file already present, then **stop**. No infinite query, no hang.""")
+
+code('''from olist.pipeline.streaming import prepare_stream_source, run_weekly_volume_stream
+
+spark.sparkContext.setCheckpointDir("outputs/_cache/_stream_ckpt")
+
+# Materialise a 6-file sample so the stream sees 6 micro-batches "arrive".
+stream_dir = prepare_stream_source(spark, n_batches=6, limit=6000)
+print("watching:", stream_dir.split("/")[-1], "(6 micro-batch files)")
+''')
+
+code('''# readStream -> per-week count -> in-memory sink, availableNow (drains then stops)
+weekly_stream_result = run_weekly_volume_stream(spark, stream_dir)
+print(f"weeks aggregated from the stream: {weekly_stream_result.count():,}")
+weekly_stream_result.orderBy(F.col("weekly_order_count").desc()).show(8, truncate=False)
+''')
+
+md("""**What this means.** The streaming query produced the same shape of result as the batch `nb1_weekly_order_volume` — a per-week order count — but built it *incrementally* as files arrived, holding running state across triggers. Swapping the simulated file source for a real Kafka/file feed of live orders would turn the entire Seller Risk Index into a continuous early-warning system **without changing any of the analytical logic** — which is the §7 recommendation, now demonstrated rather than asserted. (Bonus per the brief; the core pipeline above does not depend on it.)""")
+
+
 md("""---
 
 ## End of notebook
 
-This is the complete deliverable. The project goals (§1.1), the three sub-research-questions (§1.2), the data-foundation context (§2), the three sub-analyses (§3, §4, §5), the cross-analysis synthesis (§6), and the recommendations + limitations + reproducibility (§7) all live here. The codebase under `src/olist/` is the single source of truth for every transformation; this notebook is the report surface.""")
+This is the complete deliverable. The project goals (§1.1), the three sub-research-questions (§1.2), the data-foundation context (§2), the three sub-analyses (§3, §4, §5), the cross-analysis synthesis (§6), the recommendations + limitations + reproducibility (§7), and the streaming bonus (§8) all live here. The codebase under `src/olist/` is the single source of truth for every transformation; this notebook is the report surface.""")
 
 code('''spark.stop()
 print("Spark stopped. Main notebook complete.")

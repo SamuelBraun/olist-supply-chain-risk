@@ -8,8 +8,21 @@ is loud, not silent.
 
 from __future__ import annotations
 
+import os
+import sys
+
 import pyspark
 from pyspark.sql import SparkSession
+
+# Pin Spark's Python workers to the *same* interpreter as the driver (the venv).
+# Without this, workers fall back to `/usr/bin/python3`, which lacks venv-only
+# deps like torch — fine until an executor-side UDF imports one (e.g. the
+# predict_batch_udf LSTM scorer in pipeline.sentiment). Unconditional (not
+# setdefault): a stale `PYSPARK_PYTHON` exported in a shell profile / CI runner
+# would otherwise silently reintroduce the wrong interpreter. Set before the
+# JVM/py4j gateway launches.
+os.environ["PYSPARK_PYTHON"] = sys.executable
+os.environ["PYSPARK_DRIVER_PYTHON"] = sys.executable
 
 # Map Spark major.minor → GraphFrames jar coordinate that ships for it.
 _GRAPHFRAMES_BY_SPARK = {
