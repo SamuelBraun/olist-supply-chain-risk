@@ -1646,8 +1646,8 @@
           <div class="sp-cell sp-cell--why">One pipeline reads all four — and the graph answers a structural question no spreadsheet can.</div>
 
           <div class="sp-cell sp-cell--demand edge--green"><span class="v-tag v-tag--green"><span class="vt-mark">V<sub>2</sub></span><span class="vt-name">Velocity</span></span><span class="v-prob">orders and reviews never stop arriving</span></div>
-          <div class="sp-cell sp-cell--spark">Weekly batch scoring (the models + graph need full history) <strong>plus a Structured Streaming layer</strong> for live signals</div>
-          <div class="sp-cell sp-cell--why">Batch produces the score; streaming flags spikes between runs — so risk surfaces in days, not weeks.</div>
+          <div class="sp-cell sp-cell--spark">Weekly batch scoring <strong>plus a Structured Streaming layer</strong> for live signals</div>
+          <div class="sp-cell sp-cell--why">Batch produces the score (it needs full history); streaming flags spikes between runs.</div>
 
           <div class="sp-cell sp-cell--demand edge--yellow"><span class="v-tag v-tag--yellow"><span class="vt-mark">V<sub>4</sub></span><span class="vt-name">Veracity</span></span><span class="v-prob">raw data is incomplete and noisy</span></div>
           <div class="sp-cell sp-cell--spark">Spark cleaning — <strong>drop, dedupe, aggregate, cap outliers</strong></div>
