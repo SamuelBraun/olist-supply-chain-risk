@@ -410,8 +410,8 @@
   .spark-banner {
     background: #FFF8F3;
     border-left: 6px solid var(--orange);
-    padding: 22px 28px;
-    margin-bottom: 22px;
+    padding: 24px 30px;
+    margin-top: 24px;
     display: grid;
     grid-template-columns: 340px 1fr;
     gap: 28px;
@@ -444,6 +444,7 @@
     flex: 1;
     display: grid;
     grid-template-columns: 1.05fr 1.15fr 1fr;
+    grid-template-rows: auto repeat(4, 1fr);   /* data rows stretch to fill height */
     border: 2px solid var(--ink);
     background: var(--paper);
     min-height: 0;
@@ -451,8 +452,8 @@
   .sp-th {
     background: var(--ink);
     color: var(--paper);
-    padding: 18px 22px;
-    font-size: 12px;
+    padding: 16px 22px;
+    font-size: 12.5px;
     font-weight: 900;
     letter-spacing: .18em;
     text-transform: uppercase;
@@ -461,19 +462,34 @@
   }
   .sp-th--accent { background: var(--orange); }
   .sp-cell {
-    padding: 20px 22px;
+    padding: 18px 22px;
     border-top: 1px solid var(--line);
-    font-size: 15.5px;
+    font-size: 16.5px;
     line-height: 1.5;
     display: flex;
     align-items: flex-start;
   }
   .sp-cell strong { font-weight: 800; }
-  .sp-cell--demand { font-weight: 700; color: var(--ink); }
-  .sp-cell--spark { background: #FFF8F3; }
+  .sp-cell--demand { font-weight: 700; color: var(--ink); flex-direction: column; gap: 9px; border-left: 6px solid transparent; }
+  .sp-cell--spark { background: #FFF8F3; align-items: center; }
   .sp-cell--spark strong { color: var(--orange); }
-  .sp-cell--why { color: var(--mute); font-size: 14.5px; }
+  .sp-cell--why { color: var(--mute); font-size: 15px; align-items: center; }
   .sp-cell--why strong { color: var(--ink); }
+  /* V badge (pill) + problem text, and per-row colour edge — palette matches slide 5 */
+  .v-pill {
+    display: inline-block; align-self: flex-start;
+    font-size: 12px; font-weight: 900; letter-spacing: .14em; text-transform: uppercase;
+    color: #fff; padding: 4px 13px; border-radius: 999px;
+  }
+  .v-prob { font-weight: 600; color: var(--ink); }
+  .v-pill--blue   { background: var(--blue); }
+  .v-pill--green  { background: var(--green-dk); }
+  .v-pill--pink   { background: var(--pink); }
+  .v-pill--yellow { background: var(--yellow); color: var(--ink); }
+  .edge--blue   { border-left-color: var(--blue); }
+  .edge--green  { border-left-color: var(--green-dk); }
+  .edge--pink   { border-left-color: var(--pink); }
+  .edge--yellow { border-left-color: var(--yellow); }
 
   /* ============================================================
      SLIDE 6 — Prototypes + convergence
@@ -1617,33 +1633,33 @@
       <p class="subtitle">The dataset is small today, but the problem is <strong>big-data-shaped</strong> — so the tooling has to be too. These are the four challenges from the previous slide, now solved.</p>
 
       <div class="exhibit">
-        <!-- Leading banner: the partition-safe + scale message -->
-        <div class="spark-banner">
-          <div class="sb-num">~1.5M → ~15M rows<small>SAME PIPELINE · 10× THE DATA</small></div>
-          <div class="sb-text">Every step is written to work <strong>across a cluster</strong> — no operation assumes the data fits on one machine, and the few non-scalable shortcuts are flagged and justified. So the laptop prototype <strong>is</strong> the production pipeline: scaling 10× adds hardware, not rewrites.</div>
-        </div>
-
-        <!-- 4-row challenge → tool → value table (mirrors the four V's) -->
+        <!-- 4-row challenge → tool → value table (the four V's, now solved) -->
         <div class="spark-table">
           <div class="sp-th">Big-data challenge</div>
           <div class="sp-th sp-th--accent">The right Spark tool</div>
           <div class="sp-th">What it means for Olist</div>
 
-          <div class="sp-cell sp-cell--demand"><strong>Volume</strong> — 9 tables, ~1.5M rows, joined every run and growing</div>
+          <div class="sp-cell sp-cell--demand edge--blue"><span class="v-pill v-pill--blue">Volume</span><span class="v-prob">9 tables, ~1.5M rows, joined every run and growing</span></div>
           <div class="sp-cell sp-cell--spark"><strong>Distributed joins</strong> + broadcasting the small lookup tables</div>
           <div class="sp-cell sp-cell--why">Adds machines, not rewrites — the same pipeline runs when the marketplace is 10× bigger.</div>
 
-          <div class="sp-cell sp-cell--demand"><strong>Variety</strong> — orders, Portuguese reviews, maps, and the seller↔customer network</div>
+          <div class="sp-cell sp-cell--demand edge--pink"><span class="v-pill v-pill--pink">Variety</span><span class="v-prob">orders, Portuguese reviews, maps, and the seller↔customer network</span></div>
           <div class="sp-cell sp-cell--spark">One Spark stack: <strong>SQL, MLlib, a deep-learning model, and GraphFrames</strong></div>
           <div class="sp-cell sp-cell--why">One pipeline reads all four — and the graph answers a structural question no spreadsheet can.</div>
 
-          <div class="sp-cell sp-cell--demand"><strong>Velocity</strong> — orders and reviews never stop arriving</div>
+          <div class="sp-cell sp-cell--demand edge--green"><span class="v-pill v-pill--green">Velocity</span><span class="v-prob">orders and reviews never stop arriving</span></div>
           <div class="sp-cell sp-cell--spark">Weekly batch scoring <strong>plus a Structured Streaming prototype</strong></div>
           <div class="sp-cell sp-cell--why">A Monday refresh today; near-real-time when the client needs it — same logic.</div>
 
-          <div class="sp-cell sp-cell--demand"><strong>Veracity</strong> — raw data is incomplete and noisy</div>
+          <div class="sp-cell sp-cell--demand edge--yellow"><span class="v-pill v-pill--yellow">Veracity</span><span class="v-prob">raw data is incomplete and noisy</span></div>
           <div class="sp-cell sp-cell--spark">Spark cleaning — <strong>drop, dedupe, aggregate, cap outliers</strong></div>
           <div class="sp-cell sp-cell--why">Every seller score is built only on data the client can trust.</div>
+        </div>
+
+        <!-- Payoff banner — the result that follows from the four solutions above -->
+        <div class="spark-banner">
+          <div class="sb-num">~1.5M → ~15M rows<small>SAME PIPELINE · 10× THE DATA</small></div>
+          <div class="sb-text">Every step is written to work <strong>across a cluster</strong> — no operation assumes the data fits on one machine, and the few non-scalable shortcuts are flagged and justified. So the laptop prototype <strong>is</strong> the production pipeline: scaling 10× adds hardware, not rewrites.</div>
         </div>
       </div>
     </div>
