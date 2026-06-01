@@ -18,6 +18,7 @@ Caches:
 
 from __future__ import annotations
 
+import os
 import re
 from collections import Counter
 from pathlib import Path
@@ -64,6 +65,11 @@ LSTM_EPOCHS = 3
 LSTM_BATCH_SIZE = 128
 LSTM_SEED = 1394
 NLP_SPLIT_SEED = 5067
+
+# Fast-iteration mode for CI / dev reruns. When OLIST_LIGHT=1 the heavy CV grid
+# and LSTM epoch count shrink; the full grid/epochs run otherwise (nightly heavy
+# run). Never touches labels, schemas, or any written parquet.
+LIGHT = os.environ.get("OLIST_LIGHT") == "1"
 
 _TOKEN_RE = re.compile(r"[a-záàâãéêíóôõúüç]+", re.IGNORECASE)
 
@@ -180,12 +186,22 @@ def fit_nlp_pipeline(labelled: DataFrame) -> dict:
 
     nlp_pipeline = build_nlp_pipeline()
     lr_stage: LogisticRegression = nlp_pipeline.getStages()[-1]
-    param_grid = (
-        ParamGridBuilder()
-        .addGrid(lr_stage.regParam, [0.0, 0.01, 0.1])
-        .addGrid(lr_stage.elasticNetParam, [0.0, 0.5])
-        .build()
-    )
+    if LIGHT:
+        # 2 combos (regParam only) × 2 folds — enough to exercise CV wiring fast.
+        param_grid = (
+            ParamGridBuilder()
+            .addGrid(lr_stage.regParam, [0.01, 0.1])
+            .build()
+        )
+        num_folds = 2
+    else:
+        param_grid = (
+            ParamGridBuilder()
+            .addGrid(lr_stage.regParam, [0.0, 0.01, 0.1])
+            .addGrid(lr_stage.elasticNetParam, [0.0, 0.5])
+            .build()
+        )
+        num_folds = 3
     evaluator = BinaryClassificationEvaluator(
         labelCol="label", metricName="areaUnderROC"
     )
@@ -193,7 +209,7 @@ def fit_nlp_pipeline(labelled: DataFrame) -> dict:
         estimator=nlp_pipeline,
         estimatorParamMaps=param_grid,
         evaluator=evaluator,
-        numFolds=3,
+        numFolds=num_folds,
         seed=NLP_SPLIT_SEED,
         parallelism=2,
         collectSubModels=False,
@@ -208,7 +224,11 @@ def fit_nlp_pipeline(labelled: DataFrame) -> dict:
     cv_avg_metrics = [
         {
             "regParam": float(pm[lr_stage.regParam]),
-            "elasticNetParam": float(pm[lr_stage.elasticNetParam]),
+            # elasticNetParam is only in the grid in the full (non-LIGHT) run;
+            # fall back to the stage default otherwise.
+            "elasticNetParam": float(
+                pm.get(lr_stage.elasticNetParam, lr_stage.getElasticNetParam())
+            ),
             "cv_avg_auc": float(metric),
         }
         for pm, metric in zip(param_grid, cv_model.avgMetrics)
@@ -251,18 +271,75 @@ def _encode(tokens: list[str], vocab: dict[str, int]) -> list[int]:
     return ids
 
 
+def _patch_torchdistributor_ipv4_rendezvous() -> None:
+    """Force TorchDistributor's local-mode rendezvous onto the IPv4 loopback.
+
+    The stock ``_get_torchrun_args`` returns ``--standalone`` for local mode,
+    which torchrun expands to ``--rdzv_backend=c10d --rdzv_endpoint=localhost:0``.
+    On macOS that ``localhost`` resolves to the IPv6 loopback ``::1`` and the
+    c10d TCPStore then stalls on a broken reverse lookup. We replace it with an
+    explicit c10d endpoint on ``127.0.0.1:0`` (a free IPv4 port). Idempotent:
+    a sentinel attribute guards against double-patching across reruns.
+    """
+    import os
+
+    from pyspark.ml.torch import distributor as _dist_mod
+
+    # macOS rendezvous fix (root cause). The elastic agent's
+    # `next_rendezvous` creates a *shared* c10d TCPStore server bound to the
+    # node's own resolved address (`self._this_node.addr`), not to our endpoint.
+    # On this Mac that address routes through the IPv6 loopback `::1`, whose
+    # broken reverse-DNS PTR (`…ip6.arpa`) makes the TCPStore hang ~300s and
+    # fail. `TORCH_DISABLE_SHARE_RDZV_TCP_STORE=1` is torch's documented opt-out:
+    # it skips creating that shared store entirely (the worker then talks gloo
+    # over MASTER_ADDR=127.0.0.1, set in `_lstm_train_distributed`). USE_LIBUV=0
+    # is kept as harmless extra insurance against the libuv loopback path.
+    # These are set in the driver and propagate to the agent subprocess via the
+    # Popen env TorchDistributor inherits.
+    os.environ["TORCH_DISABLE_SHARE_RDZV_TCP_STORE"] = "1"
+    os.environ["USE_LIBUV"] = "0"
+
+    if getattr(_dist_mod.TorchDistributor, "_olist_ipv4_patched", False):
+        return
+
+    def _ipv4_torchrun_args(local_mode: bool, num_processes: int):
+        if local_mode:
+            args = [
+                "--nnodes=1",
+                "--rdzv_backend=c10d",
+                "--rdzv_endpoint=127.0.0.1:0",
+                "--rdzv_id=olist_lstm",
+            ]
+            return args, num_processes
+        return _orig_get_torchrun_args(local_mode, num_processes)
+
+    _orig_get_torchrun_args = _dist_mod.TorchDistributor._get_torchrun_args
+    _dist_mod.TorchDistributor._get_torchrun_args = staticmethod(_ipv4_torchrun_args)
+    _dist_mod.TorchDistributor._olist_ipv4_patched = True
+
+
 def _lstm_train_distributed(npz_path: str, params: dict):
     """Self-contained training function launched by ``TorchDistributor`` in a
     worker subprocess (Week-9 lab pattern: every import + class def lives inside
     the function so it pickles to the worker, and the trained ``state_dict`` is
     returned to the driver). Reads the encoded train arrays from ``npz_path``.
     """
+    import os
+
     import numpy as np
     import torch
     import torch.nn as nn
     import torch.distributed as dist
     from torch.utils.data import DataLoader, Dataset
 
+    # macOS rendezvous fix: TorchDistributor's default master address can resolve
+    # to a link-local IPv6 host (…ip6.arpa) that the gloo TCPStore cannot reach,
+    # so init_process_group hangs ~300s before failing. Pin the rendezvous to the
+    # IPv4 loopback and bind gloo to the loopback interface. MASTER_PORT (set by
+    # TorchDistributor) is left untouched.
+    os.environ["MASTER_ADDR"] = "127.0.0.1"
+    os.environ.setdefault("GLOO_SOCKET_IFNAME", "lo0")
+    os.environ["USE_LIBUV"] = "0"  # macOS IPv6-loopback TCPStore fix (see patch helper)
     dist.init_process_group(backend="gloo")
     torch.manual_seed(params["seed"])
     data = np.load(npz_path)
@@ -373,19 +450,30 @@ def train_lstm(text_labelled: DataFrame) -> dict:
     X_train, y_train = encoded[train_idx], labels[train_idx]
     X_test, y_test = encoded[test_idx], labels[test_idx]
 
+    # LIGHT: single epoch for fast reruns; full LSTM_EPOCHS in the heavy run.
+    epochs = 1 if LIGHT else LSTM_EPOCHS
     params = {
         "seed": LSTM_SEED,
         "vocab_size": LSTM_VOCAB_SIZE,
         "embed_dim": LSTM_EMBED_DIM,
         "hidden_dim": LSTM_HIDDEN_DIM,
         "pad_idx": LSTM_PAD_IDX,
-        "epochs": LSTM_EPOCHS,
+        "epochs": epochs,
         "batch_size": LSTM_BATCH_SIZE,
     }
 
     workdir = tempfile.mkdtemp(prefix="olist_lstm_")
     npz_path = os.path.join(workdir, "train.npz")
     np.savez(npz_path, X_train=X_train, y_train=y_train)
+
+    # macOS rendezvous fix. TorchDistributor's local_mode passes torchrun
+    # `--standalone`, which hardcodes the c10d rendezvous endpoint to
+    # `localhost:0`. On macOS `localhost` resolves to the IPv6 loopback `::1`,
+    # whose reverse-DNS PTR (`…ip6.arpa`) cannot be re-resolved, so the TCPStore
+    # rendezvous hangs ~300s and then fails. We swap `--standalone` for an
+    # explicit c10d rendezvous on the IPv4 literal `127.0.0.1:0` (free port),
+    # which sidesteps IPv6 and the reverse lookup entirely. Scoped + idempotent.
+    _patch_torchdistributor_ipv4_rendezvous()
 
     # BIG-DATA-SAFETY-ESCAPE: LSTM_PYTORCH — distributed training launcher
     result = TorchDistributor(
@@ -478,7 +566,7 @@ def train_lstm(text_labelled: DataFrame) -> dict:
     ],
     outputs=["outputs/_cache/sentiment_lstm_metrics.parquet"],
     code_deps=_SENT_CODE_DEPS,
-    version=1,
+    version=2,
 )
 def train_lstm_cached(spark: SparkSession) -> DataFrame:
     """Cacheable wrapper around `train_lstm`. Reads the cached reviews-with-

@@ -394,8 +394,8 @@ md("""### 3.5 Feature engineering. Window-based lags + rolling, ML Pipeline
 
 This subsection demonstrates two more PySpark primitives:
 
-1. **Window functions.** `Window.partitionBy(seller_id).orderBy(year_week)` provides per-seller lag-1, lag-4, and 4-week rolling-mean features (`rowsBetween(-4, -1)`).
-2. **`pyspark.ml.Pipeline`.** Two stages: `Imputer` (median-imputes the lag features for the first weeks of each seller's history) and `VectorAssembler` (bundles the six model features into a `Vector` column ready for MLlib).""")
+1. **Window functions.** `Window.partitionBy(seller_id).orderBy(year_week)` provides per-seller lag-1 and lag-4, a 4-week rolling mean (`rowsBetween(-4, -1)`), and a time-weighted momentum term `decay_wtd_8w` — a geometrically decayed eight-week lookback (weight `0.6^k` on the k-th most recent week) that captures recent demand trend more sharply than the flat rolling mean.
+2. **`pyspark.ml.Pipeline`.** Two stages: `Imputer` (median-imputes the lag features for the first weeks of each seller's history) and `VectorAssembler` (bundles the seven model features into a `Vector` column ready for MLlib).""")
 
 code('''from olist.pipeline.demand import (
     build_weekly_order_volume, build_feature_pipeline,
@@ -410,6 +410,11 @@ print("\\nFeature Pipeline stages:")
 for stage in feature_pipeline.getStages():
     print(" ", stage)
 print("\\nFeature columns:", FEATURE_COLS)
+''')
+
+md("""**The Spark code behind this step:**""")
+
+code('''print(inspect.getsource(build_feature_pipeline))
 ''')
 
 code('''weekly_features = add_weekly_features(weekly_order_volume)
@@ -437,9 +442,22 @@ print("RF  CrossValidator:")
 print("  numFolds:", cv["rf_cv"].getNumFolds(), "| param grid size:", len(cv["rf_cv"].getEstimatorParamMaps()))
 ''')
 
+md("""**The Spark code behind this step:**""")
+
+code('''print(inspect.getsource(build_cv_estimators))
+print(inspect.getsource(fit_and_score))
+''')
+
 code('''scoring = fit_and_score(spark)
-print("--- demand_metrics ---")
+print("--- demand_metrics (model RMSE + naive baselines) ---")
 scoring["demand_metrics"].show()
+
+# The honest comparison: model RMSE next to the naive baselines on the same held-out rows.
+dm = scoring["demand_metrics"].first()
+print(f"GBT={dm['gbt_rmse']:.3f}  RF={dm['rf_rmse']:.3f}  selected={dm['best_name']}")
+print(f"baselines  persistence_lag1={dm['persistence_lag1_rmse']:.3f}  "
+      f"rolling_4w_mean={dm['rolling_4w_mean_rmse']:.3f}  "
+      f"train_mean={dm['train_mean_rmse']:.3f}")
 ''')
 
 
@@ -467,7 +485,7 @@ viz.styled_topn_table(
 )
 ''')
 
-md("""Both regressors land at nearly identical test RMSE (~5 orders/week). The pipeline auto-selects whichever has the lower test RMSE; in the current run that is GBT. The closeness implies the estimator choice is not the bottleneck, so any additional signal would have to come from new features, not a different model family.""")
+md("""Both regressors land at similar test RMSE, and the pipeline auto-selects whichever is lower (the ✓ in the table marks the winner — RandomForest edges it in the current run). The closeness implies the estimator choice is not the bottleneck: the gains over the naive baselines (§3.6) came from the feature set, the time-weighted momentum term in particular, rather than from the model family.""")
 
 
 md("""#### 3.7.2 Feature importance""")
@@ -531,9 +549,62 @@ viz.styled_topn_table(
 md("""These are the sellers with the strongest predicted growth, the natural conversation list for "do you have inventory headroom for the next four weeks?" The colour gradient adds the operational warning: high uplift together with a red `avg_delay_days` is the dangerous combination, growing demand a seller is already failing to deliver on. Those are the highest-priority intervention candidates from this sub-analysis.""")
 
 
+md("""### 3.9 Two granularities, and a counterintuitive result
+
+We forecast demand at two levels and let the naive baselines decide which one earns its keep.
+
+The per-seller weekly series is sparse: most sellers see only a handful of orders in a week, so the obvious expectation is that a "next week looks like this week" rule (lag-1 persistence) would be hard to beat. It turns out to be beatable. Once the feature set carries a time-weighted recent-demand term (`decay_wtd_8w`, a geometrically decayed eight-week lookback that weights the most recent weeks most heavily), the tuned ensemble pulls clear of all three naive baselines on the held-out calendar weeks. The §3.6 metrics show the selected model below persistence, the rolling-four-week mean, and the train-mean. That momentum feature does real work: it is among the model's strongest predictors (§3.7).
+
+The surprise is at the other end. Aggregating to the state x week grain gives dense series, and the intuition is that density should make them easier to forecast. The opposite holds here. Aggregate regional volume behaves close to a random walk, so persistence is genuinely hard to beat, and the tuned model does not clear it (compare `model_rmse` with `baseline_rmse` below). The truncated tail of the Olist window — the final weeks where volume tapers as the dataset ends — falls in the holdout and rewards "repeat last week" further. We keep the regional forecast and report the negative result rather than dropping it: it is a genuine finding that aggregate demand here carries little structure beyond its own recent level.""")
+
+code('''from olist.pipeline.demand import build_regional_weekly_volume, fit_regional_forecast
+
+regional_weekly = build_regional_weekly_volume(spark)
+print(f"regional (state x week) rows: {regional_weekly.count():,}")
+regional_weekly.orderBy(F.col("weekly_order_count").desc()).limit(5).show()
+''')
+
+code('''regional_scoring = fit_regional_forecast(spark)
+print("--- regional metrics ---")
+regional_scoring["demand_regional_metrics"].show()
+''')
+
+code('''# Read the per-(state, week) actual-vs-predicted output and surface model vs baseline RMSE.
+regional_fc = spark.read.parquet("../outputs/nb1_regional_demand_forecast.parquet")
+rmse_row = regional_fc.select("model_rmse", "baseline_rmse").first()
+print(f"regional model_rmse    = {rmse_row['model_rmse']:.3f}")
+print(f"regional baseline_rmse = {rmse_row['baseline_rmse']:.3f}  (best naive)")
+''')
+
+code('''# BIG-DATA-SAFETY-ESCAPE: STATE_AGG_VIZ — actual vs predicted for a few dense states
+top_states = [r["seller_state"] for r in (
+    regional_fc.groupBy("seller_state").agg(F.sum("actual").alias("vol"))
+    .orderBy(F.col("vol").desc()).limit(3).collect()
+)]
+plot_pd = (
+    regional_fc.filter(F.col("seller_state").isin(top_states))
+    .select("seller_state", "year_week", "actual", "predicted")
+    .orderBy("seller_state", "year_week")
+    .toPandas()
+)
+long_pd = plot_pd.melt(
+    id_vars=["seller_state", "year_week"],
+    value_vars=["actual", "predicted"],
+    var_name="series", value_name="orders",
+)
+long_pd["line"] = long_pd["seller_state"] + " " + long_pd["series"]
+viz.weekly_trend_multiline(
+    long_pd, x="year_week", y="orders", hue="line",
+    title="Regional demand forecast — actual vs predicted (top-3 states by volume)",
+)
+''')
+
+md("""The regional model does not pull clear of the naive baseline (compare `model_rmse` with `baseline_rmse` above): at the state-aggregate level weekly volume is close to a random walk, and the truncated tail of the data window rewards persistence further. We report this honestly as a negative result. The forecasting signal Olist can actually plan against comes from the per-seller model (§3.6), whose momentum features beat the naive baselines; the regional view mainly confirms that aggregation alone does not manufacture predictability where the underlying process is near-memoryless.""")
+
+
 md("""### Key takeaways
 
-Both GBT and RF land at ~5 orders/week test RMSE, well below the magnitude of an actionable demand swing, and GBT is selected on lower test RMSE. The model is interpretable: lagged volume plus the 4-week rolling mean drive most of the prediction, which matches how ops already thinks about demand. Two per-seller signals reach the deployment parquet, `forecast_uplift_pct` (growth) and `avg_delay_days` / `delay_risk_flag` (delivery risk), and they combine into the demand component of the §6 index. The late-rate tail is geographically concentrated in a handful of states, which is why §7 recommends a regional-targeting sweep. The honest limitation is that the model has no view of promotion calendars or stock-outs, so the large positive residuals are volume spikes the feature set simply cannot predict.""")
+Counter to the usual intuition, the per-seller model is where forecasting earns its keep. Once a time-weighted recent-demand feature is added, the tuned ensemble beats lag-1 persistence, the rolling-four-week mean, and the train-mean on held-out calendar weeks (§3.6), with the momentum and lag features carrying most of the signal (§3.7). The state x week aggregate, by contrast, behaves close to a random walk and the model does not clear persistence there — a negative result we report rather than hide. The per-seller `forecast_uplift_pct`, `avg_delay_days`, and `delay_risk_flag` reach the deployment parquet, with `avg_delay_days` feeding the demand component of the §6 index. The late-rate tail is geographically concentrated in a handful of states, which is why §7 still recommends a regional-targeting sweep on the delivery-risk side. The honest limitation is no view of promotion calendars or stock-outs, so the large positive residuals are the volume spikes the feature set cannot anticipate.""")
 
 
 # ===========================================================================
@@ -618,6 +689,11 @@ for stage in nlp_pipeline.getStages():
     print(" ", stage)
 ''')
 
+md("""**The Spark code behind this step:**""")
+
+code('''print(inspect.getsource(build_nlp_pipeline))
+''')
+
 md("""The stages are `Tokenizer → StopWordsRemover[pt] → HashingTF(2^16) → IDF → LogisticRegression`. The Portuguese stopword list is critical (filtering English stopwords on Portuguese text would do nothing). `HashingTF(2^16)` projects to a 65,536-dim feature space, large enough to keep most distinct terms separable, and `IDF` re-weights toward discriminative terms. We keep the LR classifier deliberately, because a TF-IDF + LR pipeline is the honest benchmark a production team would actually deploy first.""")
 
 
@@ -663,6 +739,12 @@ md("""#### 4.6.2 PyTorch LSTM, trained inside Spark (deep-learning rubric line)
 **Run inside Spark, not on the bare driver.** Rather than a plain driver-side training loop, this follows the Spark / deep-learning integration pattern. Training goes through `TorchDistributor(local_mode=True)` (`pyspark.ml.torch.distributor`), which launches a self-contained worker function and returns the trained `state_dict` to the driver, the same launcher that would scale to multi-GPU/multi-node unchanged. Scoring of the held-out set goes through `predict_batch_udf` (`pyspark.ml.functions`): the model is loaded once per worker and the test set is scored as a distributed Spark batch job, so the reported AUC comes from distributed inference, not a driver loop.
 
 **Why not MLlib?** Spark ML has no native LSTM. The remaining escapes, `LSTM_TO_PANDAS` (materialising the ~43k-row text to build the vocab) and `LSTM_PYTORCH` (the PyTorch model itself), are annotated and catalogued in `docs/big_data_safety_log.md`. Production-scale alternatives remain `spark-nlp` or Petastorm with PyTorch DDP.""")
+
+md("""**The Spark code behind this step** (the `TorchDistributor` worker + `predict_batch_udf` scoring):""")
+
+code('''from olist.pipeline.sentiment import train_lstm
+print(inspect.getsource(train_lstm))
+''')
 
 code('''from olist.pipeline.sentiment import train_lstm_cached
 
@@ -722,9 +804,13 @@ md("""#### 4.7.3 Per-seller sentiment trend via `applyInPandas` (split-apply-com
 
 The window-based `sentiment_trend_6wk` compares only the last two 6-week windows. A complementary view fits an ordinary-least-squares line through each seller's entire weekly-sentiment history and reads off the slope (stars/week). There is no native Spark function for a per-group regression, so this is the textbook case for grouped-map `applyInPandas`: the regression runs on the executors, one seller-group at a time, and never collects the full set to the driver. That is the scalable form of split-apply-combine.""")
 
-code('''from olist.pipeline.sentiment import seller_sentiment_slopes
+md("""**The Spark code behind this step** (grouped-map `applyInPandas` per-seller OLS slope):""")
 
-seller_slopes = seller_sentiment_slopes(reviews_with_seller)
+code('''from olist.pipeline.sentiment import seller_sentiment_slopes
+print(inspect.getsource(seller_sentiment_slopes))
+''')
+
+code('''seller_slopes = seller_sentiment_slopes(reviews_with_seller)
 print(f"sellers with a fitted slope (>=6 weeks of history): {seller_slopes.count():,}")
 
 # BIG-DATA-SAFETY-ESCAPE: SMALL_SUMMARY_COLLECT — top/bottom 10-row slices
@@ -760,7 +846,7 @@ lag_pd = lag_df.toPandas()
 viz.lag_corr_bar(lag_pd)
 ''')
 
-md("""Honest finding: peak |ρ| ≈ 0.015 at lag 7 weeks, so sentiment is **not** a strong leading indicator of volume at this sample size. We report that in the §7 recommendations rather than overclaim. The weekly rollup is still valuable as a trend signal *within* the risk index, since declining sentiment alongside declining demand and high network centrality is a stronger composite signal than any one component alone.""")
+md("""Honest finding: the cross-correlation is indistinguishable from zero at all lags (the peak |ρ| printed above is a fraction of a percent). Sentiment does not lead volume at this sample size, and we report that in §7 rather than overclaim. The weekly rollup is still useful as a trend signal *within* the risk index, since declining sentiment alongside declining demand and high network centrality is a stronger composite signal than any one component alone. And the NLP and LSTM classifiers are required-demonstration models whose labels derive from the star rating itself, so they validate the text-to-sentiment mapping rather than serve as standalone predictive tools.""")
 
 
 md("""### 4.8 Interpretation. Per-seller scores + deployment view
@@ -800,7 +886,7 @@ md("""These ten are the highest-priority outreach candidates from the sentiment 
 
 md("""### Key takeaways
 
-Both classifiers clear the 0.90 bar: LogReg reaches a best test AUC of 0.9564 under 3-fold CV (best params `regParam=0.1, elasticNetParam=0.0`) and the LSTM edges it at 0.9619. The LSTM runs inside Spark, trained via `TorchDistributor(local_mode=True)` and scored via `predict_batch_udf`, the integration pattern rather than a bare driver loop. The confusion matrix confirms the classifier is genuinely useful on the operationally-important negative class despite the imbalance. We carry the per-seller trend two ways: the Window-based `sentiment_trend_6wk` reaches the deployment parquet, cross-checked by a whole-history OLS slope via grouped-map `applyInPandas` (§4.7.3), alongside `pct_negative_reviews`. The honest caveat is that sentiment does not lead volume in this sample (peak |ρ| ≈ 0.015 at lag 7w), so the trend feeds the §6 composite as a component, not a standalone trigger. And ~58% of reviews have no text and sit out of the NLP pipeline, though they still contribute to the trend rollup via their numeric score.""")
+Both classifiers comfortably clear the 0.90 AUC bar under 3-fold CV, with the LSTM edging the LogReg baseline (see the printed metrics above). The LSTM runs inside Spark, trained via `TorchDistributor(local_mode=True)` and scored via `predict_batch_udf`, the integration pattern rather than a bare driver loop. Worth keeping in mind that these are required-demonstration classifiers: their labels come from the star rating, so a high AUC validates the text-to-sentiment mapping, it does not make them predictive instruments. The confusion matrix confirms the classifier is genuinely useful on the operationally-important negative class despite the imbalance. We carry the per-seller trend two ways: the Window-based `sentiment_trend_6wk` reaches the deployment parquet, cross-checked by a whole-history OLS slope via grouped-map `applyInPandas` (§4.7.3), alongside `pct_negative_reviews`. The honest caveat is that sentiment-to-volume cross-correlation is indistinguishable from zero at all lags in this sample, so the trend feeds the §6 composite as a component, not a standalone trigger. And most reviews have no comment text and sit out of the NLP pipeline, though they still contribute to the trend rollup via their numeric score.""")
 
 
 # ===========================================================================
@@ -870,6 +956,11 @@ print("\\nTop 5 sellers by purchase-only in-degree:")
 seller_degrees.orderBy(F.col("in_degree_purchase_only").desc()).limit(5).show()
 ''')
 
+md("""**The Spark code behind this step** (GraphFrame build):""")
+
+code('''print(inspect.getsource(build_graph_frame))
+''')
+
 md("""A few sellers serve dramatically more customers than the median, so the marketplace has clear anchor sellers. That skew is what makes PageRank discriminative below: a small number of nodes rank far above the rest.""")
 
 
@@ -883,6 +974,13 @@ code('''from olist.pipeline.network import compute_pagerank
 
 seller_pagerank = compute_pagerank(spark)
 print(f"seller_pagerank rows: {seller_pagerank.count():,}")
+''')
+
+md("""**The Spark code behind PageRank and connected components:**""")
+
+code('''from olist.pipeline.network import compute_connected_components as _cc_fn
+print(inspect.getsource(compute_pagerank))
+print(inspect.getsource(_cc_fn))
 ''')
 
 md("""#### 5.5.2 Connected components + isolation flag""")
@@ -910,6 +1008,11 @@ shared_customer_pairs = compute_shared_customer_motifs(spark)
 print(f"distinct seller-pairs sharing ≥1 customer: {shared_customer_pairs.count():,}")
 ''')
 
+md("""**The Spark code behind the motif find:**""")
+
+code('''print(inspect.getsource(compute_shared_customer_motifs))
+''')
+
 
 md("""#### 5.5.4 Co-customer projection. Centrality, communities, and a degree-proxy check
 
@@ -932,6 +1035,12 @@ print(f"sellers in projection: {cocustomer_centrality.count():,}  |  "
       f"sellers with a backup: {backup_map.count():,}")
 ''')
 
+md("""**The Spark code behind the projection** (co-customer centrality + label-propagation communities):""")
+
+code('''print(inspect.getsource(compute_cocustomer_centrality))
+print(inspect.getsource(compute_substitution_communities))
+''')
+
 md("""**Is the graph just re-deriving degree?** The honest test: correlate each network signal against raw seller in-degree (customer count). If a signal tracks degree at r≈1, it carries nothing a `groupBy` could not.""")
 
 code('''net_scores = build_seller_network_scores(spark)  # assembled per-seller table
@@ -951,7 +1060,15 @@ viz.styled_topn_table(
 )
 ''')
 
-md("""Bipartite `pagerank_score` correlates with in-degree at ~1.0: it *is* a degree proxy, kept only as a sanity ranking. `substitutability_deficit` correlates far more weakly (~0.4), a genuine degree-by-neighbourhood interaction (high impact AND few substitutes) that no single `groupBy` produces. That deficit is the graph-unique signal feeding the §6 network axis. The scatter makes the non-relationship visible: high-degree sellers spread across the whole centrality range rather than sitting on a line.""")
+md("""Pearson alone flatters the deficit, so we also compute the rank (Spearman) correlation, since triage acts on rank order, not raw values. Both legs are shown below.""")
+
+code('''from olist.pipeline.network import degree_proxy_diagnostics
+
+# Pearson AND Spearman corr of in_degree vs each signal (rank-based Spearman).
+degree_proxy_diagnostics(spark).show(truncate=False)
+''')
+
+md("""Bipartite `pagerank_score` correlates with in-degree at ~1.0 on both metrics: it *is* a degree proxy, kept only as a sanity ranking. The `substitutability_deficit` is more interesting. Its Pearson correlation with in-degree is mild (around 0.38), which on its own would suggest an orthogonal signal. But its Spearman (rank) correlation is much higher, around 0.89. Since escalation runs on rank order, that means the deficit is best understood as a degree-adjusted *refinement* of the customer-count ranking rather than a fully independent axis. We keep it because the refinement carries the "few substitutes" structure a plain `groupBy` cannot, and we are explicit that by rank it largely follows degree. The scatter below shows the spread that the mild Pearson number reflects.""")
 
 code('''# BIG-DATA-SAFETY-ESCAPE: PLOTLY_STATIC_VIZ — 1000-row sample for the scatter
 proof_pd = (
@@ -1000,12 +1117,18 @@ backup_df = compute_bfs_backups(spark)
 backup_df.show(truncate=False)
 ''')
 
+md("""**The Spark code behind BFS backups:**""")
+
+code('''print(inspect.getsource(compute_bfs_backups))
+''')
+
 md("""#### 5.6.2 Delayed-subgraph PageRank. Contagion centrality
 
 Induced subgraph over edges where `avg_delay > 5`, with PageRank rerun there. Sellers ranking high in the delayed subgraph are structurally central to the late-shipping part of the marketplace, the contagion-risk hubs.""")
 
 code('''from olist.pipeline.network import compute_delayed_subgraph_pagerank
 
+print(inspect.getsource(compute_delayed_subgraph_pagerank))
 seller_network_risk = compute_delayed_subgraph_pagerank(spark)
 print(f"seller_network_risk rows: {seller_network_risk.count():,}")
 ''')
@@ -1150,7 +1273,7 @@ md("""These ten are the contagion hubs, structurally central to the part of the 
 
 md("""### Key takeaways
 
-Bipartite PageRank tracks raw in-degree at r≈1.0, and we say so: it is a degree proxy, kept only as a sanity ranking. The graph-unique value comes from the seller↔seller projection. The real signal is `substitutability_deficit` (high impact with few substitutes), which correlates with in-degree at only ~0.4, so it is not recoverable from a `groupBy`, and it feeds the §6 network axis blended 50/50 with delayed-subgraph contagion. The motif map is operationalised into a per-seller `backup_seller_id` + `backup_strength` lookup, with a non-SAFE seller lacking any backup flagged `escalate_no_backup`. Label-propagation substitution communities replace the dead isolation finding by surfacing clusters that can absorb each other's demand, and delayed-subgraph PageRank flags the contagion-risk tail for §7. The honest limitation: edges are item-count weighted, not revenue weighted, so a value-weighted projection could shift which sellers count as structurally critical.""")
+Bipartite PageRank tracks raw in-degree at r≈1.0, and we say so: it is a degree proxy, kept only as a sanity ranking. The graph-unique value comes from the seller↔seller projection. The headline signal is `substitutability_deficit` (high impact with few substitutes). Its Pearson correlation with in-degree is mild (~0.38), but its Spearman (rank) correlation is high (~0.89), so we frame it honestly: by rank order it is largely a degree-adjusted refinement of customer count rather than a fully orthogonal axis. We keep it because the refinement encodes the "few substitutes" structure a plain `groupBy` cannot, and it feeds the §6 network axis blended 50/50 with delayed-subgraph contagion. The motif map is operationalised into a per-seller `backup_seller_id` + `backup_strength` lookup, with a non-SAFE seller lacking any backup flagged `escalate_no_backup`. Label-propagation substitution communities replace the dead isolation finding by surfacing clusters that can absorb each other's demand, and delayed-subgraph PageRank flags the contagion-risk tail for §7. The honest limitation: edges are item-count weighted, not revenue weighted, so a value-weighted projection could shift which sellers count as structurally critical.""")
 
 
 # ===========================================================================
@@ -1179,29 +1302,24 @@ code('''from olist.pipeline.convergence import (
 )
 
 risk = build_seller_risk_index(spark)
-print(f"Weights:    {RISK_WEIGHTS}")
-print(f"Thresholds: CRITICAL > {RISK_CRITICAL_THRESHOLD}, SAFE < {RISK_SAFE_THRESHOLD}")
+print(f"Weights: {RISK_WEIGHTS}")
+print("Bands are percentile-based: CRITICAL = top 1% of risk_score, "
+      "WARNING = next 4%, SAFE = bottom 95%.")
 print("\\nRisk-band counts:")
 risk_band_counts(risk).show()
 print(f"Total scored sellers: {risk.count():,}")
-
-# Why is CRITICAL empty? Show where the worst sellers actually land.
-# BIG-DATA-SAFETY-ESCAPE: SMALL_SUMMARY_COLLECT — single-row + p99 quantile
-score_max = risk.agg(F.max("risk_score").alias("m")).first()["m"]
-p99 = risk.approxQuantile("risk_score", [0.99], 0.001)[0]
-print(f"\\nrisk_score max = {score_max:.3f}  |  p99 = {p99:.3f}  |  CRITICAL bar = {RISK_CRITICAL_THRESHOLD}")
 ''')
 
-md("""Three observations:
+md("""Three points on the design:
 
-- **No seller crosses CRITICAL, and here is why, not just that.** The printout shows the single worst seller's `risk_score` sits below the `0.75` bar, with the 99th percentile far below it. Structurally this is expected: `risk_score` is a 0.35/0.35/0.30 weighted average of three components each clamped to [0, 1], so reaching 0.75 requires a seller to be near-worst on most axes at once. Real sellers tend to fail on one axis (late delivery, or poor sentiment, or structural fragility), which lands them high in WARNING, not CRITICAL. The empty CRITICAL band is therefore a genuine finding about how risk distributes (it is rarely compound), not a mis-set threshold, and the WARNING band carries the entire actionable tail. §7.4 notes how a more concentrated marketplace would push sellers across the line.
-- **Inner-join is intentional.** A seller has to appear in all three sub-analyses to score (≈3,000 of ≈3,090 do). Sellers missing from one analysis (e.g. zero reviews) are excluded; they would generate noise rather than signal.
+- **Percentile bands, not fixed cut-offs.** Each axis is normalised by its percentile rank, so all three contribute on the same 0-to-1 footing regardless of their raw spread, and the composite is then banded by percentile: the top 1% land in CRITICAL, the next 4% in WARNING, the remaining 95% in SAFE. This always produces an actionable short-list sized to the marketplace, rather than depending on whether the weighted average happens to cross a fixed threshold. The band counts above follow directly from those percentiles.
+- **Inner-join is intentional.** A seller has to appear in all three sub-analyses to score (around 3,000 of ~3,090 do). Sellers missing from one analysis, e.g. zero reviews, are excluded; they would generate noise rather than signal.
 - **Equal-weighted demand and sentiment.** The 0.35/0.35 split treats the two operational signals as equally important; network risk gets 0.30 because it is more structural and slow-moving than per-week-actionable.""")
 
 
-md("""### 6.2 How correlated are the three signals?
+md("""### 6.2 Are the three signals orthogonal, and does each contribute equally?
 
-If the three components were strongly correlated, the composite would be redundant. We'd be double-counting one underlying signal. The Pearson correlation matrix below answers this directly.""")
+Two distinct questions. First, are the components measuring overlapping things, the pairwise correlation matrix below answers that. Second, does each axis actually pull its weight in the final score, or does one dominate. The earlier min-max normalisation let sentiment dominate the composite; the percentile-rank normalisation puts all three on the same footing, and the per-axis correlation of each component with the final `risk_score` is the direct test of that balance.""")
 
 code('''# BIG-DATA-SAFETY-ESCAPE: PLOTLY_STATIC_VIZ — small (3-col) component frame
 risk_pd = risk.select("demand_norm", "sentiment_norm", "network_norm", "risk_score").toPandas()
@@ -1212,7 +1330,13 @@ viz.correlation_heatmap(
 )
 ''')
 
-md("""The off-diagonal cells are small, so the three signals are largely orthogonal. This validates the composite design: each component captures a kind of risk the other two cannot see. If `demand_norm` and `sentiment_norm` were ρ = 0.8 the convergence layer would just be a louder version of one signal; instead they jointly cover three distinct failure modes.""")
+code('''from olist.pipeline.convergence import risk_component_correlations
+
+# Correlation of each axis with the final risk_score — proves balanced contribution.
+risk_component_correlations(spark).show(truncate=False)
+''')
+
+md("""The off-diagonal cells of the matrix are small, so the three signals are largely orthogonal: each captures a kind of risk the other two cannot see. The per-axis correlations with `risk_score` are close to one another, which is the point of the percentile-rank normalisation. No single axis dominates the composite, so the index is a genuine three-signal blend rather than a relabelled version of whichever component happened to have the widest raw spread.""")
 
 
 md("""### 6.3 Risk archetypes. Which kind of risk dominates each seller?
@@ -1341,7 +1465,7 @@ viz.styled_topn_table(
 
 md("""### 6.6 What the three signals tell us together
 
-Reading the synthesis end-to-end: the three signals are orthogonal (§6.2), so the composite is a genuine multi-signal index rather than a louder version of one component. The marketplace has a long-tail risk profile (§6.4 donut), with most sellers SAFE and the operational risk concentrated in a manageable WARNING band. Risk has kinds, not just amounts (§6.3 archetypes): the same `risk_score` can mean very different operational realities, which is why the §7 plan is differentiated by archetype. And the §6.5 top-20 list is actionable today, with concrete sellers and a directional read on what's wrong, ready for account-management triage. The synthesis is what makes the three sub-analyses together worth more than any one alone.""")
+Reading the synthesis end-to-end: the three signals are orthogonal and now contribute in balanced proportion (§6.2), so the composite is a genuine multi-signal index rather than a louder version of one component. Percentile banding (§6.1) concentrates the operational risk into a small CRITICAL + WARNING short-list while the bulk of the marketplace sits SAFE. Risk has kinds, not just amounts (§6.3 archetypes): the same `risk_score` can mean very different operational realities, which is why the §7 plan is differentiated by archetype. And the §6.5 top-20 list is actionable today, with concrete sellers and a directional read on what's wrong, ready for account-management triage. The synthesis is what makes the three sub-analyses together worth more than any one alone.""")
 
 
 # ===========================================================================
@@ -1356,7 +1480,7 @@ md("""### 7.1 Recommendations for Olist
 
 Six prioritised actions grounded in the numbers above. Management-ready, no jargon:
 
-1. **Intervene on the WARNING band first, by archetype.** No seller crosses into CRITICAL in this run; the WARNING band carries the entire actionable tail. The §6.3 archetype clusters tell you *what kind* of intervention each seller needs:
+1. **Work the CRITICAL and WARNING bands first, by archetype.** Percentile banding always surfaces a sized short-list (the top 1% CRITICAL, next 4% WARNING); the §6.1 counts give the exact numbers for this run. The §6.3 archetype clusters tell you *what kind* of intervention each flagged seller needs:
    - *delay-driven* sellers → logistics / fleet / warehouse review (operational fix);
    - *sentiment-driven* sellers → product-quality and post-sales review (commercial fix);
    - *centrality-driven* sellers → dual-sourcing agreements + strategic-watchlist promotion (structural fix);
@@ -1375,13 +1499,14 @@ Six prioritised actions grounded in the numbers above. Management-ready, no jarg
 
 md("""### 7.2 What the model can't see. Honest limitations
 
-Five honest gaps, in priority order:
+Six honest gaps, in priority order:
 
+- **The index scores sellers with enough trading history.** The composite covers 1,630 sellers, not the full ~2,970, because the per-seller demand scores require at least a few weeks of weekly volume for the lag and momentum features, and the index inner-joins on that table. Sellers with very short histories — typically new or very-low-volume accounts — are not scored here. Their delivery delay is still observable, so a lightweight delay-only fallback score could extend coverage to the full seller base if Olist wants every account on the board.
 - **Promotion calendars.** The forecast has no view of marketplace-wide promotions or seller-level campaigns, and the large positive residuals in §3.7.3 are volume spikes the feature set genuinely cannot predict. A promotion-flag feature (if Olist surfaces one) would close most of this gap.
 - **Sentiment as a leading indicator is weak at this sample size.** §4.7.3 reports peak |ρ| ≈ 0.015: sentiment does not predict volume changes meaningfully in the Olist sample. We use it as a component of the composite, not a standalone trigger.
 - **Reviews without comments are partly invisible.** About 58% of reviews have no text and are excluded from the NLP pipeline; they still contribute to the per-seller trend rollup via their numeric score, but the LSTM and LogReg classifiers train only on the comment-bearing subset.
 - **Equal-weight bidirectional edges in the network.** §5 treats every customer-seller interaction as equal weight (item count); a value-weighted edge (revenue, profitability, frequency) could change which sellers count as structurally important. Worth re-running with a value-weighted edge if Olist signs off.
-- **Threshold sensitivity.** The CRITICAL/WARNING/SAFE bands (`> 0.75`, `< 0.40`) are fixed in advance, not data-fitted. The current marketplace happens to have zero CRITICAL sellers; a more concentrated risk distribution would push some across the line and change the triage. Worth re-banding if Olist's marketplace composition changes materially.""")
+- **Banding is relative, not absolute.** The CRITICAL/WARNING/SAFE bands are percentile cut-offs (top 1% / next 4% / bottom 95%), so they always flag a fixed *fraction* of sellers rather than an absolute risk level. That keeps the triage list a workable size, but it means a seller in the WARNING band is "worse than 95% of peers," not necessarily "in absolute danger." If Olist wants an absolute-severity trigger as well, the raw `risk_score` is retained on every row and can be thresholded directly.""")
 
 
 md("""### 7.3 Big-data safety log. Inline summary
@@ -1477,6 +1602,11 @@ code('''# readStream -> per-week count -> in-memory sink, availableNow (drains t
 weekly_stream_result = run_weekly_volume_stream(spark, stream_dir)
 print(f"weeks aggregated from the stream: {weekly_stream_result.count():,}")
 weekly_stream_result.orderBy(F.col("weekly_order_count").desc()).show(8, truncate=False)
+''')
+
+md("""**The Spark code behind the streaming query** (`readStream` -> windowed count -> memory sink, `availableNow`):""")
+
+code('''print(inspect.getsource(run_weekly_volume_stream))
 ''')
 
 md("""The streaming query produced the same shape of result as the batch `nb1_weekly_order_volume`, a per-week order count, but built it incrementally as files arrived, holding running state across triggers. Swapping the simulated file source for a real Kafka or file feed of live orders would turn the entire Seller Risk Index into a continuous early-warning system without changing any of the analytical logic. That is the §7 recommendation, now demonstrated rather than asserted. (Bonus per the brief; the core pipeline does not depend on it.)""")

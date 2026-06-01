@@ -1,102 +1,175 @@
-# Execution Plan — Max-Grade Remediation Pass
+# Execution Plan — Top-Grade Remediation (2026-06-01)
 
-Created 2026-05-29. Supersedes the 2026-04-20 four-notebook build plan (that work is long done).
-Drives the project from "strong, a few weak spots" to max-grade. Scope = every item the
-2026-05-29 audit flagged weak/partial. **Approval-gated per CLAUDE.md §9.3 — do not implement until signed off.**
+Supersedes the completed 2026-05-29 pass (captured in `decisions_log.md`).
+Goal: convert a polished-but-overclaiming project into a defensible top-grade
+submission. Driven by the 2026-06-01 sanity check + the official brief
+(`docs/references/project_brief.pdf`). All heavy compute (CV, notebook execute)
+is deferred to a single `./run.sh` tonight; everything below is code prepared in
+advance so that run does the work. **Approval-gated per CLAUDE.md §9.3.**
 
-## Audit findings being addressed
-
-| # | Finding | Severity | Phase |
-| --- | --- | --- | --- |
-| A | Graph analytics broad but not graph-*unique*: PageRank r=0.9998 vs in-degree; `network_risk_score` r=0.87 vs degree, zero for 68% of sellers; motif + BFS computed then **dropped** before the risk index | 🔴 highest (heaviest-weighted rubric area) | 3, 4 |
-| B | Stale "RandomForest selected" prose contradicts code/parquet (GBT selected) | 🟠 reviewer-visible | 0 |
-| C | RDD section decorative (output unused, fragile `split(",")`); reconciliation chain inlined in notebook (`build_main.py:371-388`) violates "no logic in cells" | 🟠 | 1 |
-| D | No outlier treatment; raw delay feeds GBT label and distorts min-max normalisation range | 🟡 | 2 |
-| E | Lazy-eval / transformation-vs-action never explicitly named (only class-material concept not surfaced) | 🟡 | 1 |
-| F | LSTM AUC drift: safety log 0.9630 vs spec 0.9619 | 🟢 cosmetic | 6 |
-| G | Stale "§1 + §2 only" scaffolding comment in `build_main.py:1-17` | 🟢 | 0 |
-
-**Expected side effect (authorised by this plan):** headline metrics will move materially (>1%) —
-risk-band counts especially. CLAUDE.md §7 normally requires stop-and-ask on >1% drift; this plan is
-that authorisation. New values get written back to §7 in Phase 6.
+Controlling brief facts:
+- "**The .ipynb is the only code we will consider.**" → Spark code must be
+  *visible* in the notebook, not only callable from `src/`.
+- Grade depends primarily on correct/idiomatic Spark use; graph analytics is the
+  heaviest-weighted area.
+- Oral Q&A probes modelling choices → every claim must survive a one-line check.
 
 ---
 
-## Phase 0 — Quick correctness fixes (no recompute)
-Low-risk; only a notebook rebuild, no parquet recompute.
+## Workstream A — Notebook code visibility (structural fix) — HIGHEST ROI
 
-1. **B — GBT narrative.** `scripts/build_main.py` ~L477 and ~L543-544: replace hardcoded "RF wins / RF is selected" with text interpolated from `best_name` / `metrics_pd` so prose tracks the dynamically-rendered table and can't drift again.
-2. **G — stale header.** Delete "Sections 3–7 are added in subsequent commits; this commit lands §1 + §2 only." from `build_main.py:1-17`.
-3. Rebuild notebook (`scripts/build_main.py`), re-execute affected cells, eyeball.
-4. Commit: `fix(nb): GBT-correct model-selection narrative + drop stale header`.
+Problem: ~62/71 code cells are thin `olist.*` calls; only 2 use
+`inspect.getsource`. A grader reading only the notebook sees the implementing
+Spark code for ~2.5 of 9 required demonstrations. **None of the heavy ones
+(Pipelines, CV/MLlib, LSTM, GraphFrames, Streaming, applyInPandas) are visible.**
 
-## Phase 1 — RDD: make it load-bearing + name lazy evaluation
-Addresses C and E. Recomputes demand chain.
+Fix: extend the existing `print(inspect.getsource(fn))` pattern in
+`scripts/build_main.py` to one cell per hidden primitive, placed in its section.
+Functions to surface (verify exact names on implement):
 
-1. **Move the inlined reconciliation into `src`.** New `demand.rdd_vs_typed_reconciliation(spark)` holding the `build_main.py:371-388` chain. Notebook cell shrinks to import + call + `.show()`.
-2. **Make the RDD path produce a consumed result.** Extend `demand.rdd_daily_order_count` (or a sibling) so the RDD pass also counts **malformed/unparseable rows** (lines failing the field-count check) and returns that tally. Wire the tally into the §2 cleaning-audit table so the RDD output is genuinely used downstream. Keep the fragile-`split` caveat as one honest markdown line ("manual parse for the RDD demo; production reads via the typed loader").
-3. **E — lazy-eval cell.** One markdown + ~3-line code cell near the RDD section: build a transformation chain (no job), fire an action, call out transformation-vs-action + lazy DAG (`.explain()` / printed note). Add `check_lazy_eval_documented` to `checks.py`, register in `CHECKS`.
-4. Rebuild + re-execute demand section; confirm cache reran demand and downstream behaved.
-5. Commit: `feat(demand): load-bearing RDD malformed-row count + lazy-eval callout; move reconciliation to src`.
+| Section | Function(s) to `getsource` |
+|---|---|
+| §3.5 feature Pipeline | `demand.build_feature_pipeline` (VectorAssembler, lag/rolling/calendar) |
+| §3.6 MLlib + CV | `demand.fit_and_score` (GBT+RF + ParamGridBuilder + CrossValidator + RegressionEvaluator) |
+| §4.4 NLP Pipeline | `sentiment.build_nlp_pipeline` (Tokenizer→StopWordsRemover[pt]→HashingTF→IDF→LR) |
+| §4.6.1 LR CV | `sentiment.fit_nlp_pipeline` (CV grid) |
+| §4.6.2 Deep Learning | LSTM model class + `sentiment.train_lstm` (TorchDistributor + predict_batch_udf) |
+| §4.7.3 UDF | `sentiment.seller_sentiment_slopes` (applyInPandas) |
+| §5.4–5.6 GraphFrames | `network.build_graph_frame`, `compute_pagerank`, `compute_connected_components`, `compute_shared_customer_motifs`, `compute_bfs_backups`, `compute_delayed_subgraph_pagerank`, `compute_cocustomer_centrality`, `compute_substitution_communities` |
+| §8 Streaming | `streaming.run_weekly_volume_stream` (readStream/writeStream/trigger) |
 
-## Phase 2 — Outlier treatment
-Addresses D. Recomputes demand + risk index.
-
-1. **Winsorise `delivery_delay_days`** in `demand.py` feature prep using `approxQuantile` bounds (clip ~[p1, p99]); record clipped-row count. Reuses the `approxQuantile` already computed for EDA — now it drives a transform.
-2. **Stabilise the normalisation range** in `convergence.compute_normalisation_ranges`: compute min/max on the winsorised columns (or clamp at percentile bounds) so one extreme seller no longer compresses everyone's `demand_norm`.
-3. Log to `decisions_log.md`: bounds, rows clipped, rationale.
-4. Rebuild + re-execute; commit: `feat(preprocess): winsorise delivery delay; stabilise risk normalisation range`.
-
-## Phase 3 — Graph rework: add graph-unique signal (core of the pass)
-Addresses A. Recomputes the network module.
-
-Keep every existing op (degree, bipartite PageRank, CC, motif, BFS, delayed-subgraph PageRank) — they
-satisfy `check_graphframe_ops ≥ 6` and rubric breadth. **Add a seller↔seller co-customer projection
-layer**, where the genuinely graph-unique value lives.
-
-1. **Co-customer projection graph** (`network.build_cocustomer_graph`): vertices = sellers (~3k), edges from the cached `network_motifs.parquet` `(seller_a, seller_b, n_shared_customers)`, thresholded `n_shared_customers ≥ 2`. Small → cheap.
-2. **Co-customer centrality** (`network.compute_cocustomer_centrality`): PageRank weighted by shared-customer count on the projection = "embeddedness in the substitution network". **Report `corr(cocustomer_centrality, in_degree)` in the notebook to prove it is not a degree proxy.**
-3. **Community detection** (`network.compute_substitution_communities`): `gf.labelPropagation(maxIter=5)` on the projection → substitution communities. Replaces the dead "0 isolated sellers" CC finding with informative segmentation. Add `community_id` + community size.
-4. **Backup-for-ALL-sellers** (`network.compute_backup_map`): every seller's backup = co-customer partner with max `n_shared_customers`; `backup_strength` = that count. Persist for all sellers (not just top-10 hubs) — makes the motif **load-bearing**. Keep the top-10 BFS hop-count as the "how far is the nearest substitute" traversal finding.
-5. **Substitutability-deficit feature:** high `in_degree` (failure impact) × low `backup_strength`/few partners = single point of failure. True degree×neighbourhood interaction, correlates poorly with raw degree — the new graph-unique risk signal.
-6. **Extend `nb3_seller_network_scores.parquet`:** add `backup_seller_id` (all sellers), `backup_strength`, `cocustomer_centrality`, `n_cocustomer_partners`, `community_id`, `substitutability_deficit`. Existing columns retained.
-7. New safety-log IDs for any small `.toPandas()`/collect feeding the new viz; register in `safety.py` + `big_data_safety_log.md`.
-8. Commit: `feat(network): co-customer projection — centrality, communities, backup-for-all, substitutability deficit`.
-
-## Phase 4 — Convergence integration
-Addresses A (decision-impact half). Recomputes risk index.
-
-**Open decision (recommendation in bold):** how the network axis enters the risk score.
-- **Recommended: redefine `network_norm` as a 50/50 blend of contagion (existing delayed-PageRank `network_risk_score`) and the new `substitutability_deficit`** — graph-unique, non-degenerate across the population (fixes the 68%-zero problem), and genuinely distinct from demand's delay signal.
-- Alt A: keep `network_risk_score` as-is, add `substitutability_deficit` only as a recommendation gate (smaller change, weaker fix).
-- Alt B: replace contagion entirely with deficit (cleanest story, drops the delayed-subgraph link).
-
-1. Implement the chosen network-axis definition in `convergence.build_seller_risk_index`; carry `backup_seller_id`, `backup_strength`, `community_id`, `substitutability_deficit` into `seller_risk_index.parquet`.
-2. **Backup-gated recommendation:** flag "CRITICAL/WARNING seller with weak/no backup (`backup_strength` below threshold) → escalate; else route demand to backup". Surface in §7 — converts the graph insight into an action.
-3. Commit: `feat(convergence): graph-unique network axis + backup-gated recommendations`.
-
-## Phase 5 — Notebook narrative, viz, checks, docs
-1. **§5 rewrite** in `build_main.py`: co-customer projection / centrality / community / substitutability narrative; **bipartite-PageRank≈degree honesty callout with the measured r**; reframe BFS/motif as load-bearing. Update §5 Key Takeaways and §6/§7 for the new network axis + backup recommendations.
-2. **viz.py helpers** (small-DF only): substitutability-deficit scatter (impact×backup), community-size bar, centrality-vs-degree scatter (the proof chart).
-3. **checks.py:** add `check_cocustomer_graph`, `check_outlier_treatment`, `check_lazy_eval_documented`; register in `CHECKS`. Update `check_parquet_artefacts` if paths change.
-4. **Docs:** CLAUDE.md §5 (graph contract), §7 (new `nb3` + `seller_risk_index` schemas), §8 + §8.1 (graph + new checks). Append `decisions_log.md` per phase. Tick `grading_checklist.md`.
-5. Commit: `docs+nb: graph-unique narrative, proof charts, new compliance checks`.
-
-## Phase 6 — Full rerun, reconcile, verify
-1. `./run.sh` end-to-end (clean `outputs/_gf_checkpoints/` first). Expect network + convergence + demand to recompute.
-2. **Reconcile metrics into CLAUDE.md §7 and `big_data_safety_log.md`:** new risk-band counts, new `corr` values, and **fix F** (LSTM AUC → actual executed value).
-3. `checks.run_all(spark)` all green. `scripts/assert_notebook_outputs.py` — every cell has output.
-4. `./submission/build_zip.sh` up to the assert step (dry run).
-5. Final commit + `git push origin main`.
+Each is a one-line print cell → instant output, survives
+`assert_notebook_outputs.py`. No new compute. Add a short markdown lead before
+each ("The Spark code behind this step:") so it reads as method disclosure, not a
+dump. Moves the heavy/graph rubric lines from near-invisible to fully visible.
 
 ---
 
-## Risk / rollback
-- Each phase is its own commit → revert granularly.
-- `outputs/*.parquet` committed; `diff_parquets.py` compares pre/post where schemas are stable.
-- Heaviest risk = Phase 3 `labelPropagation` cost — mitigated by running on the ~3k-seller projection (not the 100k bipartite graph) + edge-thresholding.
-- If `labelPropagation`/projection misbehaves after two fix attempts → stop and ask (§9).
+## Workstream B — Demand forecasting: a forecast that actually beats a baseline
 
-## Open decisions for sign-off
-1. **Network-axis definition (Phase 4):** approve the recommended 50/50 deficit+contagion blend, or pick Alt A / Alt B?
-2. **Scope/sequencing:** all phases now, or land 0–2 first and review before the Phase 3 graph rework?
+Problem (verified): `weekly_order_count` mean 3.11 / median 2 / 68% ≤ 2. The
+tuned seller-level GBT (RMSE ~4.92) **loses to "predict last week" (lag-1 RMSE
+~3.9)**, RMSE > target mean, and `forecast_uplift_pct` is **not even used** in the
+index (the demand axis is `avg_delay_days`). Forecaster is both weak and decorative.
+
+Fix — turn the weakness into a maturity story (3 parts):
+
+1. **Keep the seller-level model as an honest "wrong granularity" demonstration.**
+   In `demand.fit_and_score`, add naive baselines on the *same test rows*: `lag_1`
+   (persistence), rolling-4-mean, global-mean → report RMSE next to GBT/RF. State
+   plainly that per-seller weekly counts are too sparse to beat persistence. Keeps
+   the GBT/RF+CV mechanics (rubric) and adds DS maturity (measured vs baseline).
+   - Eval rigor: temporal split by **calendar week**, not per-seller row-number
+     (current `approxQuantile(week_num,0.8)` makes the test set long-tenure-biased);
+     fit the `Imputer` on **train only** (current fit-before-split leaks).
+
+2. **Add a regional forecast that genuinely beats baseline — the real tool.**
+   New in `demand.py`: `build_regional_weekly_volume` → `(seller_state, year_week)`
+   (dense ~27×~100 series) and `fit_regional_forecast` (GBT+RF under CV; features
+   lag_1/lag_2/lag_4, rolling-4 mean, month, week_of_year, state index; target
+   next-week volume; baselines lag_1 + rolling). Write
+   `outputs/nb1_regional_demand_forecast.parquet`
+   `(seller_state, year_week, actual, predicted, model_rmse, baseline_rmse)`.
+   Dense → the model should beat persistence → a *genuine* "where/when will demand
+   spike" tool (matches the brief storyline). CV here is fast.
+
+3. **Stop implying the forecast feeds the index.** Per-seller demand-risk axis stays
+   `avg_delay_days` (honest); say so. Drop / clearly relabel `forecast_uplift_pct`
+   (it manufactures a fake +30% growth for ~all sellers). Regional forecast stands
+   alone as the insight/tool.
+
+Notebook §3 narrative: seller-level (honest sparse finding) → regional forecast
+(beats baseline) → per-seller delay risk (feeds §6).
+
+**Tonight's heavy run:** the existing seller-level CV is the long part; regional CV
+is light. Both run under one `./run.sh`.
+
+---
+
+## Workstream C — Risk index: make all three signals actually contribute (Findings 1+6)
+
+Problem (verified): `corr(risk_score, sentiment_norm)=0.963`; demand_norm
+(std 0.034) and network_norm (std 0.056) barely move anyone. Composite is ~96% the
+inverted star rating. CRITICAL band is mathematically dead (max 0.705 < 0.75 → 0).
+
+Fix in `convergence.py`:
+1. Replace min-max(p1/p99) with **percentile-rank normalization** per component
+   (`percent_rank()` window → each uniform on [0,1]). Equal weights → equal
+   *influence*; all three signals genuinely move the score.
+2. **Percentile-based bands** on the composite (CRITICAL = top ~5%, WARNING = next
+   ~15%, SAFE = rest) so the top tier always identifies the worst sellers. Keep band
+   names. (Alt: keep fixed thresholds + explicitly justify empty CRITICAL — weaker.)
+3. Rewrite §6.2: drop "orthogonality validates the composite"; new framing =
+   orthogonal *and* now equally weighted; print `corr(risk_score, each)` to prove
+   balance.
+
+Impact: `seller_risk_index.parquet` recomputed; band counts, "67 WARNING / 0
+CRITICAL", "57 escalate_no_backup", top-20, slides 7/8/9 numbers WILL change →
+reconcile afterwards.
+
+---
+
+## Workstream D — Graph "substitutability" honesty (Finding 5)
+
+Problem (verified): defended with Pearson `corr(in_degree, deficit)=0.38`, but
+**Spearman = 0.89** — by the rank metric that drives triage it is largely a degree
+proxy.
+
+Fix:
+1. §5 degree-proxy check reports **both Pearson and Spearman**; stop claiming "not a
+   degree proxy".
+2. Reframe `substitutability_deficit` as a **degree-adjusted refinement** ("among
+   equally-large sellers, ranks by how few substitutes exist") — true and defensible.
+3. (Stretch) add a degree-orthogonal variant (residual of deficit on in_degree) as a
+   secondary signal. Only if time permits; the honest reframe is the required fix.
+
+---
+
+## Workstream E — Sentiment honesty + a real use (Finding 3)
+
+Problem: LSTM/LogReg labels derive from the star rating Olist already has; classifier
+output is never used downstream → circular.
+
+Fix:
+1. Reframe §4: NLP + LSTM are the brief-mandated classifier/DL demonstrations,
+   validated at AUC ~0.96. Do **not** claim operational value beyond the star rating.
+2. (Stretch) add a **star–text mismatch flag** (model sentiment disagrees with stars)
+   — genuine info stars lack; aggregate per seller. Only if time permits.
+3. Keep the honest lead-indicator null; tighten "peak |ρ| 0.015" →
+   "indistinguishable from zero at all lags 0–8w".
+
+---
+
+## Workstream F — Presentation reconciliation (after reruns)
+
+- Reference slide added (slide 11). **Before submission fold back to ≤10 slides**
+  (merge references into the closing slide) per the brief.
+- Reduce remaining jargon for the non-technical audience.
+- Re-export from the **official NOVA IMS PowerPoint template → PDF** (HTML deck is a
+  draft, not the gradable format). *(Owner: human.)*
+- After B/C rerun, update changed numbers on slides 7/8/9 + CLAUDE.md §7 +
+  `decisions_log.md`.
+
+---
+
+## Sequencing
+
+1. **Now (no compute):** Workstream A cells in `build_main.py`; code for B/C/D/E in
+   `pipeline/*.py`; adjust `checks.py`; regenerate notebook source (`build_main.py`).
+   Commit per workstream.
+2. **Tonight (heavy):** `OLIST_FORCE_ALL=1 ./run.sh` — recomputes all parquets with
+   new logic + heavy CV, executes `main.ipynb` with outputs (incl. new getsource cells).
+3. **After run:** `checks.run_all()`; `assert_notebook_outputs.py`; reconcile headline
+   numbers into CLAUDE.md §7, `decisions_log.md`, slides 7–9.
+4. **Validate fixes:** `corr(risk_score, each)` balanced; CRITICAL band fires; regional
+   forecast RMSE < baseline RMSE; Spearman reported.
+
+## Expected metric drift (authorized — exceeds CLAUDE.md §7 ±1% gate)
+Risk bands, escalate count, top-20, demand RMSE/baseline all change. Intended;
+reconcile after the run.
+
+## One open design choice
+Workstream B keeps the seller-level model (honest demonstration) **and** adds a
+regional forecast (the genuine tool). Alternative: replace seller-level entirely.
+Recommendation: **keep + add** — more Spark demonstrated, and the stronger "we
+measured, found the wrong granularity, fixed it" story.

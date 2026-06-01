@@ -751,17 +751,20 @@
   .insights-wrap {
     flex: 1;
     display: grid;
-    grid-template-columns: 1.05fr 1fr;
-    gap: 32px;
+    grid-template-columns: repeat(3, 1fr);
+    align-items: stretch;
+    gap: 28px;
     min-height: 0;
   }
   .ins-card {
     background: var(--paper);
     border: 1px solid var(--line);
-    padding: 26px 30px;
+    border-top-width: 6px;
+    padding: 32px 30px;
     display: flex;
     flex-direction: column;
-    gap: 14px;
+    justify-content: center;
+    gap: 16px;
     min-height: 0;
   }
   .ins-card .ic-eye {
@@ -772,58 +775,75 @@
     text-transform: uppercase;
   }
   .ins-card .ic-title {
-    font-size: 28px;
+    font-size: 30px;
     font-weight: 900;
-    line-height: 1.1;
+    line-height: 1.12;
     letter-spacing: -.01em;
   }
   .ins-card .ic-title em { font-style: normal; }
   .ins-card .ic-body {
-    font-size: 15px;
-    line-height: 1.5;
+    font-size: 17.5px;
+    line-height: 1.6;
     color: var(--ink);
   }
   .ins-card .ic-body strong { font-weight: 800; }
-  .ins-card .ic-fig {
+  .ins-card .ic-stat {
     flex: 1;
     min-height: 0;
-    display: flex;
-    align-items: center;
-    justify-content: center;
+    margin-top: 6px;
+    padding: 30px 28px;
     background: var(--paper-2);
     border: 1px solid var(--line);
-  }
-  .ins-card--blue { border-color: var(--blue); border-width: 2px; }
-  .ins-card--blue .ic-title em { color: var(--blue); }
-  .ins-card--green { border-color: var(--green-dk); border-width: 2px; }
-  .ins-card--green .ic-title em { color: var(--green-dk); }
-
-  /* PageRank shift table */
-  .pr-shift {
-    width: 100%;
-    border-collapse: collapse;
-    font-size: 13px;
-  }
-  .pr-shift th {
-    text-align: left;
-    padding: 8px 10px;
-    background: var(--paper-2);
-    font-size: 10px;
-    text-transform: uppercase;
-    letter-spacing: .14em;
+    border-left: 4px solid var(--ink);
+    display: flex;
+    flex-direction: column;
+    justify-content: center;
+    gap: 12px;
+    font-size: 15px;
+    font-weight: 700;
     color: var(--mute);
+    line-height: 1.35;
+    letter-spacing: .01em;
+  }
+  .ins-card .ic-stat b { font-size: 68px; font-weight: 900; line-height: .9; letter-spacing: -.02em; }
+  .ins-card--blue  .ic-stat { border-left-color: var(--blue); }
+  .ins-card--green .ic-stat { border-left-color: var(--green-dk); }
+  .ins-card--orange .ic-stat { border-left-color: var(--orange); }
+  .ins-card--blue { border-color: var(--blue); border-top-color: var(--blue); }
+  .ins-card--blue .ic-title em { color: var(--blue); }
+  .ins-card--blue .ic-stat b { color: var(--blue); }
+  .ins-card--green { border-color: var(--green-dk); border-top-color: var(--green-dk); }
+  .ins-card--green .ic-title em { color: var(--green-dk); }
+  .ins-card--green .ic-stat b { color: var(--green-dk); }
+  .ins-card--orange { border-color: var(--orange); border-top-color: var(--orange); }
+  .ins-card--orange .ic-title em { color: var(--orange); }
+  .ins-card--orange .ic-stat b { color: var(--orange); }
+
+  /* conclusion teaser — full-width dark box pointing to the Risk Index slide */
+  .ins-teaser {
+    margin-top: 26px;
+    padding: 30px 34px;
+    background: var(--ink);
+    color: var(--paper);
+    display: grid;
+    grid-template-columns: 1fr auto auto;
+    align-items: center;
+    gap: 34px;
+  }
+  .ins-teaser .it-eye {
+    font-size: 12px;
+    letter-spacing: .22em;
     font-weight: 800;
-    border-bottom: 2px solid var(--ink);
+    color: var(--orange);
+    text-transform: uppercase;
+    margin-bottom: 9px;
   }
-  .pr-shift td {
-    padding: 8px 10px;
-    border-bottom: 1px solid var(--line);
-  }
-  .pr-shift .pr-id { font-family: "JetBrains Mono", monospace; font-size: 12px; }
-  .pr-shift .pr-num { text-align: right; font-variant-numeric: tabular-nums; }
-  .pr-shift tr.up    { background: rgba(14, 224, 113, .12); }
-  .pr-shift tr.down  { opacity: .35; }
-  .pr-shift tr.down td:nth-child(3) { text-decoration: line-through; }
+  .ins-teaser .it-msg { font-size: 18px; line-height: 1.5; max-width: 72ch; }
+  .ins-teaser .it-msg strong { color: #fff; }
+  .ins-teaser .it-arrow { font-size: 36px; font-weight: 900; color: rgba(255,255,255,.38); }
+  .ins-teaser .it-next { font-size: 11px; letter-spacing: .22em; font-weight: 800; color: rgba(255,255,255,.6); text-transform: uppercase; }
+  .ins-teaser .it-prod { font-size: 26px; font-weight: 900; color: var(--orange); line-height: 1.1; margin-top: 5px; letter-spacing: -.01em; }
+  .ins-teaser .it-sub { font-size: 13px; color: rgba(255,255,255,.72); font-weight: 700; margin-top: 5px; }
 
   /* ============================================================
      SLIDE 9 — Value
@@ -850,16 +870,33 @@
     font-weight: 800;
   }
   .gain-card .gc-fromto {
-    font-size: 20px;
-    font-weight: 700;
-    color: var(--mute);
-    line-height: 1.2;
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 8px 10px;
+    font-size: 13px;
+    letter-spacing: .14em;
+    text-transform: uppercase;
+    font-weight: 800;
   }
-  .gain-card .gc-fromto .from { text-decoration: line-through; }
+  .gain-card .gc-fromto .from {
+    color: var(--mute);
+    border: 1.5px solid var(--line);
+    padding: 5px 12px;
+    border-radius: 999px;
+  }
+  .gain-card .gc-fromto .sep { color: var(--mute); font-size: 16px; }
   .gain-card .gc-fromto .to {
-    color: var(--ink);
+    color: var(--paper);
+    background: var(--ink);
+    padding: 5px 12px;
+    border-radius: 999px;
     font-weight: 900;
   }
+  .gain-card--orange .gc-fromto .to { background: var(--orange); }
+  .gain-card--blue   .gc-fromto .to { background: var(--blue); }
+  .gain-card--green  .gc-fromto .to { background: var(--green-dk); }
+  .gain-card--pink   .gc-fromto .to { background: var(--pink); }
   .gain-card .gc-title {
     font-size: 30px;
     font-weight: 900;
@@ -867,8 +904,8 @@
     letter-spacing: -.01em;
   }
   .gain-card .gc-body {
-    font-size: 15px;
-    line-height: 1.45;
+    font-size: 16px;
+    line-height: 1.5;
     color: var(--ink);
   }
   .gain-card .gc-stat {
@@ -903,76 +940,131 @@
     flex: 1;
     display: grid;
     grid-template-columns: 1fr 1fr;
-    gap: 36px;
+    gap: 28px;
+    min-height: 0;
   }
   .close-col {
+    background: var(--paper);
+    border: 2px solid var(--ink);
+    border-top-width: 6px;
+    padding: 28px 32px;
     display: flex;
     flex-direction: column;
-    gap: 12px;
   }
+  .close-col--next { border-color: var(--orange); border-top-color: var(--orange); }
   .close-col h4 {
     font-size: 14px;
     letter-spacing: .22em;
     text-transform: uppercase;
     font-weight: 900;
-    margin-bottom: 10px;
-    padding-bottom: 8px;
-    border-bottom: 3px solid var(--ink);
+    margin-bottom: 22px;
+    padding-bottom: 14px;
+    border-bottom: 2px solid var(--line);
   }
-  .close-col h4.accent { border-bottom-color: var(--orange); color: var(--orange); }
+  .close-col--next h4 { color: var(--orange); }
   .close-col ul {
-    flex: 1;
     display: flex;
     flex-direction: column;
-    justify-content: space-around;
+    gap: 20px;
+    list-style: none;
   }
   .close-col li {
-    font-size: 20px;
+    font-size: 17px;
     line-height: 1.5;
-    padding: 22px 0 22px 32px;
-    border-bottom: 1px dashed var(--line);
-    list-style: none;
+    padding-left: 28px;
     position: relative;
   }
-  .close-col li:last-child { border-bottom: 0; }
   .close-col li::before {
-    content: "·";
+    content: "";
     position: absolute;
-    left: 4px;
-    top: 18px;
-    color: var(--orange);
-    font-weight: 900;
-    font-size: 28px;
-    line-height: 1;
+    left: 2px;
+    top: 8px;
+    width: 8px;
+    height: 8px;
+    background: var(--ink);
   }
+  .close-col--next li::before { background: var(--orange); }
   .close-col li b { display: none; }
   .close-col li strong { font-weight: 800; color: var(--ink); }
+  .close-col--next li strong { color: var(--orange); }
 
   .close-stamp {
-    margin-top: 18px;
+    margin-top: 26px;
     background: var(--ink);
     color: var(--paper);
-    padding: 20px 26px;
-    display: flex;
+    padding: 28px 36px;
+    display: grid;
+    grid-template-columns: 1fr auto;
     align-items: center;
-    gap: 18px;
-    border: 3px solid var(--orange);
+    gap: 44px;
+    border-left: 6px solid var(--orange);
   }
-  .close-stamp .cs-arrow {
-    color: var(--orange);
-    font-size: 32px;
-    font-weight: 900;
-    line-height: 1;
-  }
-  .close-stamp .cs-body {
-    font-size: 22px;
+  .close-stamp .cs-tag {
+    font-size: 25px;
     font-weight: 800;
+    line-height: 1.32;
     letter-spacing: -.005em;
   }
-  .close-stamp .cs-body em {
+  .close-stamp .cs-tag em {
     color: var(--orange);
     font-style: normal;
   }
+  .close-stamp .cs-thanks {
+    text-align: right;
+    white-space: nowrap;
+    font-size: 30px;
+    font-weight: 900;
+    color: var(--orange);
+    line-height: 1;
+    letter-spacing: -.01em;
+  }
+  .close-stamp .cs-thanks small {
+    display: block;
+    font-size: 12px;
+    font-weight: 800;
+    letter-spacing: .2em;
+    text-transform: uppercase;
+    color: rgba(255,255,255,.6);
+    margin-top: 8px;
+  }
+
+  /* ============================================================
+     SLIDE 11 — References
+     ============================================================ */
+  .ref-grid {
+    flex: 1;
+    display: grid;
+    grid-template-columns: 1.25fr 1fr 1fr;
+    gap: 34px;
+    min-height: 0;
+  }
+  .ref-col h4 {
+    font-size: 13px;
+    letter-spacing: .22em;
+    text-transform: uppercase;
+    font-weight: 900;
+    color: var(--orange);
+    margin-bottom: 18px;
+    padding-bottom: 12px;
+    border-bottom: 2px solid var(--line);
+  }
+  .ref-col ul { list-style: none; display: flex; flex-direction: column; gap: 18px; }
+  .ref-col li {
+    font-size: 15px;
+    line-height: 1.5;
+    color: var(--ink);
+    padding-left: 18px;
+    position: relative;
+  }
+  .ref-col li::before {
+    content: "";
+    position: absolute;
+    left: 0; top: 8px;
+    width: 6px; height: 6px;
+    background: var(--mute);
+  }
+  .ref-col li strong { font-weight: 800; }
+  .ref-col li .mono { font-size: 13px; color: var(--mute); word-break: break-all; }
 
   /* ============================================================
      Navigation chrome
@@ -1037,7 +1129,7 @@
     <div class="tl-block">
       <div class="tl-kicker">BigDataCompany · Consulting update for Olist</div>
       <h1 class="tl-title">Olist<br/>Supply-Chain<br/><span class="accent">Risk Intelligence.</span></h1>
-      <p class="tl-sub">A <strong>network view</strong> of Olist's marketplace risk — built on PySpark, delivered as a weekly seller watchlist.</p>
+      <p class="tl-sub">A <strong>network view</strong> of Olist's marketplace risk. Built on PySpark and delivered as a weekly seller watchlist.</p>
     </div>
     <div class="tl-meta">
       <strong>NOVA IMS · Big Data Analysis · 2025/26</strong><br/>
@@ -1052,12 +1144,12 @@
     <div class="hd">
       <img class="hd-logo" src="assets/novaims-logo.png" alt="NOVA IMS" />
       <div class="hd-crumb"><strong>1 / Marketplace anchor</strong></div>
-      <div class="hd-num"><strong>02</strong> / 10</div>
+      <div class="hd-num"><strong>02</strong> / 11</div>
     </div>
     <div class="content">
       <div class="lead-rule"></div>
-      <h2 class="action-title">A few <em>hub sellers</em> carry most of the marketplace — and Olist sees their silent failure last.</h2>
-      <p class="subtitle"><strong>The consulting question:</strong> which sellers should Olist's account team intervene on this week — before customers do?</p>
+      <h2 class="action-title">A few <em>hub sellers</em> carry most of the marketplace, and Olist sees their silent failure last.</h2>
+      <p class="subtitle"><strong>The consulting question:</strong> which sellers should Olist's account team act on this week, before customers do?</p>
 
       <div class="exhibit">
         <div class="anchor-wrap">
@@ -1168,7 +1260,7 @@
                 <text x="1165" y="488" text-anchor="middle" font-size="13" font-weight="900" fill="#FF009C" letter-spacing=".22em">SAMPLE REVIEW</text>
                 <text x="1165" y="522" text-anchor="middle" font-size="20" font-style="italic" fill="#0A0A0A">"Arrived late, damaged."</text>
                 <text x="1165" y="562" text-anchor="middle" font-size="24" font-weight="900" fill="#FF009C">★ ★ ☆ ☆ ☆</text>
-                <text x="1165" y="590" text-anchor="middle" font-size="11" fill="#6F6F6A">customers rate every order — Portuguese free-text</text>
+                <text x="1165" y="590" text-anchor="middle" font-size="11" fill="#6F6F6A">customers rate every order in Portuguese free-text</text>
               </g>
 
               <!-- LEGEND -->
@@ -1196,11 +1288,11 @@
             </div>
             <div class="side-stat side-stat--blue">
               <div class="ss-num">1,790</div>
-              <div class="ss-label">customers depend on the single top hub seller — 1.86% of the customer base</div>
+              <div class="ss-label">customers depend on the single top hub seller: 1.86% of the customer base</div>
             </div>
             <div class="side-stat side-stat--pink">
               <div class="ss-num">104,162</div>
-              <div class="ss-label">customer reviews — 43k carry Portuguese free-text complaints</div>
+              <div class="ss-label">customer reviews: 43k carry Portuguese free-text complaints</div>
             </div>
             <div class="side-stat side-stat--green">
               <div class="ss-num">99,441</div>
@@ -1209,7 +1301,7 @@
 
             <div class="anchor-callout">
               <div class="ac-eyebrow">Why this slide matters</div>
-              <div class="ac-body">The marketplace is <strong>structurally lopsided</strong>: when a hub seller fails, three product categories disappear at once. Olist learns from customer complaints — <strong>days or weeks after</strong> the volume already dropped.</div>
+              <div class="ac-body">The marketplace is <strong>structurally lopsided</strong>: when a hub seller fails, three product categories disappear at once. Olist learns this from customer complaints, <strong>days or weeks after</strong> the volume has already dropped.</div>
             </div>
           </div>
         </div>
@@ -1228,11 +1320,11 @@
     <div class="hd">
       <img class="hd-logo" src="assets/novaims-logo.png" alt="NOVA IMS" />
       <div class="hd-crumb"><strong>2 / Where the data lives</strong></div>
-      <div class="hd-num"><strong>03</strong> / 10</div>
+      <div class="hd-num"><strong>03</strong> / 11</div>
     </div>
     <div class="content">
       <div class="lead-rule"></div>
-      <h2 class="action-title">Every interaction in the marketplace generates data — and the <em>value is in the joins</em> across 9 interconnected tables.</h2>
+      <h2 class="action-title">Every interaction in the marketplace generates data, and the <em>value is in the joins</em> across 9 interconnected tables.</h2>
       <p class="subtitle"><strong>~1.5 million rows · 9 data sources · 5 shared keys.</strong> No single table answers the consulting question; every prototype joins at least three.</p>
 
       <div class="exhibit">
@@ -1368,12 +1460,12 @@
     <div class="hd">
       <img class="hd-logo" src="assets/novaims-logo.png" alt="NOVA IMS" />
       <div class="hd-crumb"><strong>3 / From data to prototypes</strong></div>
-      <div class="hd-num"><strong>04</strong> / 10</div>
+      <div class="hd-num"><strong>04</strong> / 11</div>
     </div>
     <div class="content">
       <div class="lead-rule"></div>
       <h2 class="action-title">Four PySpark prototypes light up <em>four parts of the data network</em>, then converge into one weekly seller watchlist.</h2>
-      <p class="subtitle">Each prototype owns one signal — and joins a different subset of the 9 tables. The Seller Risk Index weights them and bands the result.</p>
+      <p class="subtitle">Each prototype owns one signal and joins a different subset of the 9 tables. The Seller Risk Index weights them and bands the result.</p>
 
       <div class="exhibit">
         <div class="proto-wrap">
@@ -1515,15 +1607,15 @@
             </div>
             <div class="proto-card proto-card--sentiment">
               <div class="pc-head"><div class="pc-num">②</div><div class="pc-title">Sentiment Monitor</div></div>
-              <div class="pc-body">Reads every Portuguese review and scores customer satisfaction per seller — reliably separating complaints from praise (Spark NLP pipeline + a PyTorch deep-learning model). Satisfaction is a <strong>direct health signal</strong>, not a volume predictor.</div>
+              <div class="pc-body">Reads every Portuguese review and scores customer satisfaction per seller, reliably separating complaints from praise (Spark NLP pipeline plus a PyTorch deep-learning model). Satisfaction is a <strong>direct health signal</strong>, not a volume predictor.</div>
             </div>
             <div class="proto-card proto-card--network">
               <div class="pc-head"><div class="pc-num">③</div><div class="pc-title">Supply-Network Graph</div></div>
-              <div class="pc-body">Maps which sellers share customers (GraphFrames) to find structural single-points-of-failure and name a <strong>backup seller</strong> for each — risk no per-seller dashboard can see.</div>
+              <div class="pc-body">Maps which sellers share customers (GraphFrames) to find structural single-points-of-failure and name a <strong>backup seller</strong> for each. This is risk no per-seller dashboard can see.</div>
             </div>
             <div class="proto-card proto-card--archetype">
               <div class="pc-head"><div class="pc-num">④</div><div class="pc-title">Risk Archetypes</div></div>
-              <div class="pc-body">Spark MLlib groups sellers into four failure modes — <strong>delivery-driven · satisfaction-driven · structurally-critical · low-risk</strong> — so each gets the right intervention.</div>
+              <div class="pc-body">Spark MLlib groups sellers into four failure modes (<strong>delivery-driven, satisfaction-driven, structurally-critical, low-risk</strong>), so each can get a targeted response.</div>
             </div>
             <div class="proto-converge">▼ CONVERGE</div>
             <div class="proto-output">
@@ -1548,12 +1640,12 @@
     <div class="hd">
       <img class="hd-logo" src="assets/novaims-logo.png" alt="NOVA IMS" />
       <div class="hd-crumb"><strong>4 / Why this is a big-data problem</strong></div>
-      <div class="hd-num"><strong>05</strong> / 10</div>
+      <div class="hd-num"><strong>05</strong> / 11</div>
     </div>
     <div class="content">
       <div class="lead-rule"></div>
-      <h2 class="action-title">Even at today's volume, the marketplace produces the <em>4 V's by design</em> — and <span class="num">8.1%</span> of orders are already late.</h2>
-      <p class="subtitle">Volume · Velocity · Variety · Veracity — all four show up structurally, not because of dataset size.</p>
+      <h2 class="action-title">Even at today's volume, the marketplace produces the <em>4 V's by design</em>, and <span class="num">8.1%</span> of orders are already late.</h2>
+      <p class="subtitle">Volume · Velocity · Variety · Veracity. All four show up structurally, not because of dataset size.</p>
 
       <div class="exhibit">
         <div class="vs-grid">
@@ -1571,7 +1663,7 @@
             <div>
               <div class="v-name">Velocity</div>
               <div class="v-stat">weekly refresh</div>
-              <div class="v-body">New orders, reviews, and delivery events arrive <strong>continuously</strong>. The Seller Risk Index must rescore every seller weekly — the pipeline runs the same code, every Monday.</div>
+              <div class="v-body">New orders, reviews, and delivery events arrive <strong>continuously</strong>. The Seller Risk Index rescores every seller weekly, running the same code every Monday.</div>
             </div>
           </div>
 
@@ -1623,12 +1715,12 @@
     <div class="hd">
       <img class="hd-logo" src="assets/novaims-logo.png" alt="NOVA IMS" />
       <div class="hd-crumb"><strong>5 / Why Spark</strong></div>
-      <div class="hd-num"><strong>06</strong> / 10</div>
+      <div class="hd-num"><strong>06</strong> / 11</div>
     </div>
     <div class="content">
       <div class="lead-rule"></div>
-      <h2 class="action-title">Four big-data challenges — met with the <em>right Spark tool for each</em>, and written to run unchanged at any scale.</h2>
-      <p class="subtitle">The dataset is small today, but the problem is <strong>big-data-shaped</strong> — so the tooling has to be too. These are the four challenges from the previous slide, now solved.</p>
+      <h2 class="action-title">Four big-data challenges, each met with the <em>matching Spark tool</em> and written to run unchanged as the data grows.</h2>
+      <p class="subtitle">The dataset is small today, but the problem is <strong>big-data-shaped</strong>, so the tooling has to be too. These are the four challenges from the previous slide, now solved.</p>
 
       <div class="exhibit">
         <!-- 4-row challenge → tool → value table (the four V's, now solved) -->
@@ -1639,25 +1731,25 @@
 
           <div class="sp-cell sp-cell--demand edge--blue"><span class="v-tag v-tag--blue"><span class="vt-mark">V<sub>1</sub></span><span class="vt-name">Volume</span></span><span class="v-prob">9 tables, ~1.5M rows, joined every run and growing</span></div>
           <div class="sp-cell sp-cell--spark"><strong>Distributed joins</strong> + broadcasting the small lookup tables</div>
-          <div class="sp-cell sp-cell--why">Adds machines, not rewrites — the same pipeline runs when the marketplace is 10× bigger.</div>
+          <div class="sp-cell sp-cell--why">Adds machines, not rewrites. The same pipeline runs when the marketplace is 10× bigger.</div>
 
           <div class="sp-cell sp-cell--demand edge--pink"><span class="v-tag v-tag--pink"><span class="vt-mark">V<sub>3</sub></span><span class="vt-name">Variety</span></span><span class="v-prob">orders, Portuguese reviews, maps, and the seller↔customer network</span></div>
           <div class="sp-cell sp-cell--spark">One Spark stack: <strong>SQL, MLlib, a deep-learning model, and GraphFrames</strong></div>
-          <div class="sp-cell sp-cell--why">One pipeline reads all four — and the graph answers a structural question no spreadsheet can.</div>
+          <div class="sp-cell sp-cell--why">One pipeline reads all four, and the graph answers a structural question no spreadsheet can.</div>
 
           <div class="sp-cell sp-cell--demand edge--green"><span class="v-tag v-tag--green"><span class="vt-mark">V<sub>2</sub></span><span class="vt-name">Velocity</span></span><span class="v-prob">orders and reviews never stop arriving</span></div>
           <div class="sp-cell sp-cell--spark">Weekly batch scoring <strong>plus a Structured Streaming layer</strong> for live signals</div>
           <div class="sp-cell sp-cell--why">Batch produces the score (it needs full history); streaming flags spikes between runs.</div>
 
           <div class="sp-cell sp-cell--demand edge--yellow"><span class="v-tag v-tag--yellow"><span class="vt-mark">V<sub>4</sub></span><span class="vt-name">Veracity</span></span><span class="v-prob">raw data is incomplete and noisy</span></div>
-          <div class="sp-cell sp-cell--spark">Spark cleaning — <strong>drop, dedupe, aggregate, cap outliers</strong></div>
+          <div class="sp-cell sp-cell--spark">Spark cleaning: <strong>drop, dedupe, aggregate, cap outliers</strong></div>
           <div class="sp-cell sp-cell--why">Every seller score is built only on data the client can trust.</div>
         </div>
 
         <!-- Payoff banner — the result that follows from the four solutions above -->
         <div class="spark-banner">
           <div class="sb-num">~1.5M → ~15M rows<small>SAME PIPELINE · 10× THE DATA</small></div>
-          <div class="sb-text">Every step is written to work <strong>across a cluster</strong> — no operation assumes the data fits on one machine, and the few non-scalable shortcuts are flagged and justified. So the laptop prototype <strong>is</strong> the production pipeline: scaling 10× adds hardware, not rewrites.</div>
+          <div class="sb-text">Every step is written to work <strong>across a cluster</strong>. No operation assumes the data fits on one machine, and the few non-scalable shortcuts are flagged and justified. So the laptop prototype <strong>is</strong> the production pipeline: scaling it 10× adds hardware, not rewrites.</div>
         </div>
       </div>
     </div>
@@ -1673,12 +1765,69 @@
   <section class="slide" data-slide="7">
     <div class="hd">
       <img class="hd-logo" src="assets/novaims-logo.png" alt="NOVA IMS" />
-      <div class="hd-crumb"><strong>6 / The unifying output</strong></div>
-      <div class="hd-num"><strong>07</strong> / 10</div>
+      <div class="hd-crumb"><strong>6 / What the analysis revealed</strong></div>
+      <div class="hd-num"><strong>07</strong> / 11</div>
     </div>
     <div class="content">
       <div class="lead-rule"></div>
-      <h2 class="action-title">The Seller Risk Index distils <em>2,967 sellers</em> into <span class="num">67</span> calls per week.</h2>
+      <h2 class="action-title">Three things a per-seller dashboard <em>cannot tell you</em>.</h2>
+      <p class="subtitle">Each finding comes from combining signals, not from any single seller KPI.</p>
+
+      <div class="exhibit">
+        <div class="insights-wrap">
+
+          <div class="ins-card ins-card--blue">
+            <div class="ic-eye">01 · Signal independence</div>
+            <div class="ic-title">Risk is <em>three separate problems</em>, not one.</div>
+            <div class="ic-body">Demand pressure, customer sentiment and network criticality barely move together. The strongest correlation between any two is just 0.22. A seller can ship on time, keep customers happy and still be a structural single point of failure. <strong>No single KPI catches all three.</strong></div>
+          </div>
+
+          <div class="ins-card ins-card--green">
+            <div class="ic-eye">02 · Supply-network graph</div>
+            <div class="ic-title">The biggest sellers aren't the <em>irreplaceable</em> ones.</div>
+            <div class="ic-body">Ranking sellers by size just re-finds the biggest accounts. Our substitutability signal surfaces <strong>small sellers no competitor can cover</strong>. They are invisible to a volume dashboard, yet they are the ones whose failure the marketplace cannot absorb. 57 at-risk sellers have no viable backup.</div>
+          </div>
+
+          <div class="ins-card ins-card--orange">
+            <div class="ic-eye">03 · Customer sentiment</div>
+            <div class="ic-title">Reviews <em>confirm</em> trouble. They don't <em>predict</em> it.</div>
+            <div class="ic-body">Our model tells happy from unhappy reviews almost perfectly, yet sentiment barely leads order volume (peak |ρ| 0.015). <strong>Delivery delay moves first.</strong> So Olist should trigger on delays and use sentiment to confirm, never the other way round.</div>
+          </div>
+
+        </div>
+
+        <div class="ins-teaser">
+          <div class="it-left">
+            <div class="it-eye">Why we built one number</div>
+            <div class="it-msg">Because the three signals are independent, no single metric ranks risk on its own. We fold delivery, customer satisfaction and structural importance into <strong>one weighted score per seller</strong>.</div>
+          </div>
+          <div class="it-arrow">→</div>
+          <div class="it-right">
+            <div class="it-next">Next slide</div>
+            <div class="it-prod">The Seller Risk Index</div>
+            <div class="it-sub">1,630 sellers → 82 weekly calls</div>
+          </div>
+        </div>
+      </div>
+    </div>
+    <div class="ft">
+      <div class="ft-source">Source: <code class="mono">outputs/seller_risk_index.parquet</code>, <code class="mono">nb2_*</code>, <code class="mono">nb3_*</code> · BigDataCompany analysis, May&nbsp;2026.</div>
+      <div class="ft-brand">Olist Supply-Chain Risk · BigDataCompany × NOVA IMS</div>
+    </div>
+  </section>
+
+  <!-- ============================================================
+       SLIDE 8 — THE SELLER RISK INDEX (the product)
+       ============================================================ -->
+  <section class="slide" data-slide="8">
+    <div class="hd">
+      <img class="hd-logo" src="assets/novaims-logo.png" alt="NOVA IMS" />
+      <div class="hd-crumb"><strong>7 / The unifying output</strong></div>
+      <div class="hd-num"><strong>08</strong> / 11</div>
+    </div>
+    <div class="content">
+      <div class="lead-rule"></div>
+      <h2 class="action-title">The Seller Risk Index distils <em>1,630 sellers</em> into <span class="num">82</span> calls per week.</h2>
       <p class="subtitle">Three weighted scores → one banded composite → weekly watchlist with archetype tag &amp; recommended action.</p>
 
       <div class="exhibit">
@@ -1689,30 +1838,30 @@
             <div class="funnel-row">
               <div class="funnel-bar">
                 <span class="fb-fill" style="width:100%"></span>
-                <span class="fb-tag">ALL SELLERS · 2,967</span>
+                <span class="fb-tag">ALL SELLERS · 1,630</span>
               </div>
-              <div class="funnel-num">2,967<small>SCORED</small></div>
+              <div class="funnel-num">1,630<small>SCORED</small></div>
             </div>
             <div class="funnel-row">
               <div class="funnel-bar funnel-bar--safe">
-                <span class="fb-fill" style="width:97.7%"></span>
+                <span class="fb-fill" style="width:95.0%"></span>
                 <span class="fb-tag">SAFE</span>
               </div>
-              <div class="funnel-num" style="color:#0AB15B">2,900<small>97.7%</small></div>
+              <div class="funnel-num" style="color:#0AB15B">1,548<small>95.0%</small></div>
             </div>
             <div class="funnel-row">
               <div class="funnel-bar funnel-bar--warn">
-                <span class="fb-fill" style="width:2.3%"></span>
+                <span class="fb-fill" style="width:4.0%"></span>
                 <span class="fb-tag">WARNING</span>
               </div>
-              <div class="funnel-num" style="color:#B39E00">67<small>2.3%</small></div>
+              <div class="funnel-num" style="color:#B39E00">65<small>4.0%</small></div>
             </div>
             <div class="funnel-row">
               <div class="funnel-bar funnel-bar--crit">
-                <span class="fb-fill" style="width:0%"></span>
+                <span class="fb-fill" style="width:1.0%"></span>
                 <span class="fb-tag">CRITICAL</span>
               </div>
-              <div class="funnel-num" style="color:#FF4011">0<small>0.0%</small></div>
+              <div class="funnel-num" style="color:#FF4011">17<small>1.0%</small></div>
             </div>
 
           </div>
@@ -1740,139 +1889,13 @@
 
         <!-- full-width conclusion callout, spanning both columns -->
         <div class="funnel-formula">
-          <strong>Each seller gets a single risk score</strong> that blends three signals — delivery, customer satisfaction, and structural importance — then lands in one of three bands.
-          <span style="color:rgba(255,255,255,.72);">No seller is <strong style="color:var(--orange)">CRITICAL</strong> this week: that needs a seller failing on all three fronts at once, which is rare. The actionable list is the <strong style="color:#F6DA00">67 WARNING</strong> sellers — and the <strong style="color:#fff">57 with no ready backup</strong> are escalated first. Late-delivery rates vary <strong style="color:#fff">~2.4× by state</strong> (AL ~24% vs SC ~10%), so each seller is scored on its own record, not against a single national bar.</span>
+          <strong>Each seller gets a single risk score</strong> that blends three signals (delivery, customer satisfaction and structural importance), then lands in one of three bands.
+          <span style="color:rgba(255,255,255,.72);">The bands are relative: <strong style="color:var(--orange)">CRITICAL</strong> is the worst ~1% of the blended score (<strong style="color:#fff">17 sellers</strong>) and <strong style="color:#F6DA00">WARNING</strong> the next ~4% (<strong style="color:#fff">65 sellers</strong>), so the weekly actionable list is <strong style="color:#fff">82 sellers</strong>, with the <strong style="color:#fff">21 non-safe sellers that have no ready backup</strong> escalated first. Late-delivery rates vary <strong style="color:#fff">~2.4× by state</strong> (AL ~24% vs SC ~10%), so each seller is scored on its own record, not against a single national bar.</span>
         </div>
       </div>
     </div>
     <div class="ft">
       <div class="ft-source">Source: <code class="mono">outputs/seller_risk_index.parquet</code> · BigDataCompany analysis, May&nbsp;2026. Top-10 seller IDs from <code class="mono">outputs/nb3_seller_network_scores.parquet</code>.</div>
-      <div class="ft-brand">Olist Supply-Chain Risk · BigDataCompany × NOVA IMS</div>
-    </div>
-  </section>
-
-  <!-- ============================================================
-       SLIDE 8 — INSIGHTS
-       ============================================================ -->
-  <section class="slide" data-slide="8">
-    <div class="hd">
-      <img class="hd-logo" src="assets/novaims-logo.png" alt="NOVA IMS" />
-      <div class="hd-crumb"><strong>7 / Insights only the network reveals</strong></div>
-      <div class="hd-num"><strong>08</strong> / 10</div>
-    </div>
-    <div class="content">
-      <div class="lead-rule"></div>
-      <h2 class="action-title"><em>Delays predict</em>. Sentiment only confirms — and hub-seller rankings shift under stress.</h2>
-      <p class="subtitle">Two findings that a per-seller dashboard cannot surface.</p>
-
-      <div class="exhibit">
-        <div class="insights-wrap">
-
-          <div class="ins-card ins-card--blue">
-            <div class="ic-eye">FINDING 1 · ORDER FLOW</div>
-            <div class="ic-title">Delivery behaviour <em>predicts.</em> Sentiment only <em>confirms.</em></div>
-            <div class="ic-body">Delivery problems are the <strong>leading signal — they move first.</strong> Customer sentiment barely tracks volume, so it confirms problems after the fact rather than predicting them. We treat delays as the <strong>early warning</strong> and satisfaction as a separate health gauge.</div>
-            <div class="ic-fig">
-              <!-- SVG line chart: weak lag-correlation peak — sentiment confirms rather than predicts -->
-              <svg viewBox="0 0 540 280" width="100%" height="100%" style="max-height:100%;">
-                <!-- title -->
-                <text x="30" y="22" font-size="11" font-weight="900" letter-spacing=".18em" fill="#6F6F6A">|CROSS-CORRELATION|  ·  SENTIMENT → ORDER VOLUME</text>
-
-                <!-- axes -->
-                <line x1="50" y1="220" x2="510" y2="220" stroke="#0A0A0A" stroke-width="1.5"/>
-                <line x1="50" y1="50" x2="50" y2="220" stroke="#0A0A0A" stroke-width="1.5"/>
-
-                <!-- gridlines -->
-                <line x1="50" y1="60" x2="510" y2="60" stroke="#E2E2DC" stroke-width="1" stroke-dasharray="3 3"/>
-                <line x1="50" y1="100" x2="510" y2="100" stroke="#E2E2DC" stroke-width="1" stroke-dasharray="3 3"/>
-                <line x1="50" y1="140" x2="510" y2="140" stroke="#E2E2DC" stroke-width="1" stroke-dasharray="3 3"/>
-                <line x1="50" y1="180" x2="510" y2="180" stroke="#E2E2DC" stroke-width="1" stroke-dasharray="3 3"/>
-
-                <!-- y-axis ticks -->
-                <text x="40" y="223" font-size="10" text-anchor="end" fill="#6F6F6A" font-weight="700">0</text>
-                <text x="40" y="183" font-size="10" text-anchor="end" fill="#6F6F6A" font-weight="700">.005</text>
-                <text x="40" y="143" font-size="10" text-anchor="end" fill="#6F6F6A" font-weight="700">.010</text>
-                <text x="40" y="103" font-size="10" text-anchor="end" fill="#6F6F6A" font-weight="700">.015</text>
-                <text x="40" y="63" font-size="10" text-anchor="end" fill="#6F6F6A" font-weight="700">.020</text>
-
-                <!-- x-axis ticks (lag weeks 0..13) -->
-                <text x="50" y="238" font-size="10" text-anchor="middle" fill="#6F6F6A" font-weight="700">0</text>
-                <text x="120" y="238" font-size="10" text-anchor="middle" fill="#6F6F6A" font-weight="700">2</text>
-                <text x="190" y="238" font-size="10" text-anchor="middle" fill="#6F6F6A" font-weight="700">4</text>
-                <text x="260" y="238" font-size="10" text-anchor="middle" fill="#6F6F6A" font-weight="700">6</text>
-                <text x="295" y="238" font-size="10" text-anchor="middle" fill="#FF4011" font-weight="900">7</text>
-                <text x="330" y="238" font-size="10" text-anchor="middle" fill="#6F6F6A" font-weight="700">8</text>
-                <text x="400" y="238" font-size="10" text-anchor="middle" fill="#6F6F6A" font-weight="700">10</text>
-                <text x="470" y="238" font-size="10" text-anchor="middle" fill="#6F6F6A" font-weight="700">12</text>
-                <text x="280" y="258" font-size="10" text-anchor="middle" fill="#6F6F6A" font-weight="800" letter-spacing=".12em">LAG (WEEKS)</text>
-
-                <!-- line: near-flat with tiny peak at 7 weeks -->
-                <polyline points="50,210 85,205 120,200 155,195 190,188 225,182 260,162 295,108 330,165 365,182 400,193 435,200 470,205 510,212" fill="none" stroke="#3777FF" stroke-width="2.5"/>
-
-                <!-- data points -->
-                <g fill="#3777FF">
-                  <circle cx="50" cy="210" r="3"/>
-                  <circle cx="120" cy="200" r="3"/>
-                  <circle cx="190" cy="188" r="3"/>
-                  <circle cx="260" cy="162" r="3"/>
-                  <circle cx="295" cy="108" r="5" stroke="#FF4011" stroke-width="3" fill="#FFFFFF"/>
-                  <circle cx="330" cy="165" r="3"/>
-                  <circle cx="400" cy="193" r="3"/>
-                  <circle cx="470" cy="205" r="3"/>
-                </g>
-
-                <!-- peak annotation -->
-                <line x1="295" y1="108" x2="295" y2="220" stroke="#FF4011" stroke-width="1" stroke-dasharray="3 3"/>
-                <rect x="320" y="82" width="170" height="46" fill="#FFFFFF" stroke="#FF4011" stroke-width="1.5"/>
-                <text x="328" y="100" font-size="10" font-weight="800" fill="#FF4011" letter-spacing=".14em">WEAK PEAK</text>
-                <text x="328" y="118" font-size="12" font-weight="900" fill="#0A0A0A">confirms, late</text>
-              </svg>
-            </div>
-          </div>
-
-          <div class="ins-card ins-card--green">
-            <div class="ic-eye">FINDING 2 · WHOLE NETWORK</div>
-            <div class="ic-title">Hub sellers <em>shift under stress.</em></div>
-            <div class="ic-body">Re-running PageRank on the <strong>late-orders subgraph</strong> changes who the structural hubs are. The dashboard view never sees this; the graph view does. <strong>When delays spike, different sellers become systemically important — so Olist should watch the stress-hubs, not just the everyday top sellers.</strong></div>
-            <div class="ic-fig" style="padding:14px;">
-              <table class="pr-shift" style="background:#FFF;">
-                <thead>
-                  <tr>
-                    <th colspan="3">PageRank top 5 · ALL ORDERS</th>
-                    <th colspan="3">PageRank top 5 · LATE-ORDERS SUBGRAPH</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  <tr>
-                    <td>1</td><td class="pr-id">6560211a…</td><td class="pr-num"></td>
-                    <td>1</td><td class="pr-id">4869f7a5…</td><td class="pr-num"><strong>NEW</strong></td>
-                  </tr>
-                  <tr>
-                    <td>2</td><td class="pr-id">4a3ca931…</td><td class="pr-num"></td>
-                    <td>2</td><td class="pr-id">4a3ca931…</td><td class="pr-num">stays</td>
-                  </tr>
-                  <tr>
-                    <td>3</td><td class="pr-id">cc419e06…</td><td class="pr-num"></td>
-                    <td>3</td><td class="pr-id">ea8482cd…</td><td class="pr-num"><strong>NEW</strong></td>
-                  </tr>
-                  <tr>
-                    <td>4</td><td class="pr-id">1f50f920…</td><td class="pr-num"></td>
-                    <td>4</td><td class="pr-id">1f50f920…</td><td class="pr-num">stays</td>
-                  </tr>
-                  <tr class="down">
-                    <td>5</td><td class="pr-id">955fee92…</td><td class="pr-num"></td>
-                    <td>5</td><td colspan="2" style="color:#6F6F6A;font-style:italic;">drops out of top 5</td>
-                  </tr>
-                </tbody>
-              </table>
-            </div>
-          </div>
-
-        </div>
-      </div>
-    </div>
-    <div class="ft">
-      <div class="ft-source">Source: <code class="mono">outputs/nb2_*</code>, <code class="mono">outputs/nb3_*</code> · BigDataCompany analysis, May&nbsp;2026. Lag-correlation computed at weekly granularity over 99 weeks of data.</div>
       <div class="ft-brand">Olist Supply-Chain Risk · BigDataCompany × NOVA IMS</div>
     </div>
   </section>
@@ -1884,42 +1907,42 @@
     <div class="hd">
       <img class="hd-logo" src="assets/novaims-logo.png" alt="NOVA IMS" />
       <div class="hd-crumb"><strong>8 / What Olist gains</strong></div>
-      <div class="hd-num"><strong>09</strong> / 10</div>
+      <div class="hd-num"><strong>09</strong> / 11</div>
     </div>
     <div class="content">
       <div class="lead-rule"></div>
-      <h2 class="action-title">Olist moves from <em>post-complaint discovery</em> to a 67-seller weekly watchlist — most with a named backup.</h2>
-      <p class="subtitle">Same pipeline, same code, every Monday — scaling from 3,095 sellers to 300,000 with zero rewrites.</p>
+      <h2 class="action-title">Olist moves from <em>post-complaint discovery</em> to an 82-seller weekly watchlist, most with a named backup.</h2>
+      <p class="subtitle">The same pipeline runs every Monday, and it scales from 1,630 sellers to 300,000 without a rewrite.</p>
 
       <div class="exhibit">
         <div class="gains-grid">
           <div class="gain-card gain-card--orange">
             <div class="gc-num">01 · POSTURE</div>
-            <div class="gc-fromto"><span class="from">reactive</span> &nbsp;→&nbsp; <span class="to">proactive</span></div>
+            <div class="gc-fromto"><span class="from">reactive</span> <span class="sep">→</span> <span class="to">proactive</span></div>
             <div class="gc-title">Weekly risk score per seller</div>
-            <div class="gc-body">No more waiting for refund tickets. Every seller is rescored every Monday and assigned a band + archetype — <strong>before the customer complains.</strong></div>
-            <div class="gc-stat">2,967<small>SELLERS SCORED · EVERY WEEK</small></div>
+            <div class="gc-body">No more waiting for refund tickets. Every seller is rescored every Monday and assigned a band and archetype, <strong>before the customer complains.</strong></div>
+            <div class="gc-stat">1,630<small>SELLERS SCORED · EVERY WEEK</small></div>
           </div>
 
           <div class="gain-card gain-card--blue">
             <div class="gc-num">02 · WORKLOAD</div>
-            <div class="gc-fromto"><span class="from">2,967 sellers</span> &nbsp;→&nbsp; <span class="to">67 calls</span></div>
+            <div class="gc-fromto"><span class="from">1,630 sellers</span> <span class="sep">→</span> <span class="to">82 calls</span></div>
             <div class="gc-title">Actionable shortlist</div>
-            <div class="gc-body">Account managers get a tractable WARNING list — <strong>2.3% of the portfolio</strong>, with a recommended action per archetype.</div>
-            <div class="gc-stat">67<small>WARNING · 0 CRITICAL THIS WEEK</small></div>
+            <div class="gc-body">Account managers get a short watchlist (<strong>5% of the portfolio</strong>) with a recommended action per archetype.</div>
+            <div class="gc-stat">82<small>17 CRITICAL + 65 WARNING THIS WEEK</small></div>
           </div>
 
           <div class="gain-card gain-card--green">
             <div class="gc-num">03 · RESILIENCE</div>
-            <div class="gc-fromto"><span class="from">single point of failure</span> &nbsp;→&nbsp; <span class="to">named backup</span></div>
+            <div class="gc-fromto"><span class="from">single point of failure</span> <span class="sep">→</span> <span class="to">named backup</span></div>
             <div class="gc-title">Backup seller per hub</div>
-            <div class="gc-body">The supply graph names a backup seller for <strong>~1,350 sellers</strong>, and flags the <strong>57 high-risk sellers with no backup</strong> to escalate first. A hub outage <strong>no longer becomes a category outage.</strong></div>
-            <div class="gc-stat">~1,350<small>SELLERS WITH A NAMED BACKUP · 57 ESCALATED</small></div>
+            <div class="gc-body">The supply graph names a backup seller for <strong>~1,350 sellers</strong>, and flags the <strong>21 high-risk sellers with no backup</strong> to escalate first. A hub outage <strong>no longer becomes a category outage.</strong></div>
+            <div class="gc-stat">~1,350<small>SELLERS WITH A NAMED BACKUP · 21 ESCALATED</small></div>
           </div>
 
           <div class="gain-card gain-card--pink">
             <div class="gc-num">04 · SCALE</div>
-            <div class="gc-fromto"><span class="from">today's CSVs</span> &nbsp;→&nbsp; <span class="to">tomorrow's cluster</span></div>
+            <div class="gc-fromto"><span class="from">today's CSVs</span> <span class="sep">→</span> <span class="to">tomorrow's cluster</span></div>
             <div class="gc-title">Same pipeline scales 100×</div>
             <div class="gc-body">PySpark code runs on a laptop today and on Databricks/EMR tomorrow. <strong>The prototype IS the production path.</strong></div>
             <div class="gc-stat">0<small>LINES OF CODE TO REWRITE FOR PRODUCTION</small></div>
@@ -1940,42 +1963,91 @@
     <div class="hd">
       <img class="hd-logo" src="assets/novaims-logo.png" alt="NOVA IMS" />
       <div class="hd-crumb"><strong>9 / Close &amp; next steps</strong></div>
-      <div class="hd-num"><strong>10</strong> / 10</div>
+      <div class="hd-num"><strong>10</strong> / 11</div>
     </div>
     <div class="content">
       <div class="lead-rule"></div>
-      <h2 class="action-title">The prototype <em>is the production path</em> — productionise on Databricks with zero code rewrite.</h2>
+      <h2 class="action-title">The prototype <em>is the production path</em>. Productionise on Databricks with no code rewrite.</h2>
       <p class="subtitle">What we built · what's next.</p>
 
       <div class="exhibit">
         <div class="close-grid">
           <div class="close-col">
-            <h4>WHAT WE BUILT</h4>
-            <ul style="list-style:none;">
-              <li><b>·</b> One PySpark notebook · executed top-to-bottom with visible outputs in every cell</li>
-              <li><b>·</b> Four prototypes: Demand Forecaster · Sentiment Monitor · Supply-Network Graph · Risk Archetypes</li>
-              <li><b>·</b> One unified deliverable: <strong>Seller Risk Index</strong> — weekly watchlist with archetype tag + recommended action</li>
-              <li><b>·</b> A <strong>Structured Streaming</strong> prototype — the weekly scoring re-expressed as a live stream (bonus track, delivered)</li>
-              <li><b>·</b> Reproducible step cache · 6 parquet outputs · deterministic across re-runs</li>
+            <h4>What we built</h4>
+            <ul>
+              <li>One reproducible <strong>PySpark notebook</strong> with visible outputs in every cell, deterministic across re-runs (step cache, 6 parquet outputs)</li>
+              <li><strong>Four prototypes:</strong> Demand Forecaster · Sentiment Monitor · Supply-Network Graph · Risk Archetypes</li>
+              <li>One unified deliverable: the <strong>Seller Risk Index</strong>, a weekly watchlist with archetype tag and recommended action</li>
+              <li>A <strong>Structured Streaming</strong> prototype that re-expresses the weekly scoring as a live stream (bonus track, delivered)</li>
             </ul>
           </div>
-          <div class="close-col">
-            <h4 class="accent">WHAT'S NEXT</h4>
-            <ul style="list-style:none;">
-              <li><b>·</b> Productionise on <strong>Databricks / EMR</strong> — scheduled weekly Spark job</li>
-              <li><b>·</b> Wire the watchlist into the seller-success CRM (Slack alerts on new WARNING entries)</li>
-              <li><b>·</b> Expand graph: add category, postal region, shipper as new vertex types</li>
+          <div class="close-col close-col--next">
+            <h4>What's next</h4>
+            <ul>
+              <li>Productionise on <strong>Databricks / EMR</strong> as a scheduled weekly Spark job</li>
+              <li>Wire the watchlist into the <strong>seller-success CRM</strong>, with Slack alerts on new WARNING entries</li>
+              <li><strong>Expand the graph:</strong> add category, postal region and shipper as new vertex types</li>
             </ul>
           </div>
         </div>
         <div class="close-stamp">
-          <div class="cs-arrow">→</div>
-          <div class="cs-body">From a list of sellers to a <em>managed network</em>. From post-complaint discovery to <em>weekly intervention</em>. The prototype is the production path.</div>
+          <div class="cs-tag">From a list of sellers to a <em>managed network</em>, and from post-complaint discovery to <em>weekly intervention</em>.</div>
+          <div class="cs-thanks">Thank you<small>Questions welcome</small></div>
         </div>
       </div>
     </div>
     <div class="ft">
       <div class="ft-source">BigDataCompany consulting team · Lukas Belser et&nbsp;al. · NOVA IMS Big Data Analysis · May&nbsp;2026.</div>
+      <div class="ft-brand">Olist Supply-Chain Risk · BigDataCompany × NOVA IMS</div>
+    </div>
+  </section>
+
+  <!-- ============================================================
+       SLIDE 11 — REFERENCES
+       ============================================================ -->
+  <section class="slide" data-slide="11">
+    <div class="hd">
+      <img class="hd-logo" src="assets/novaims-logo.png" alt="NOVA IMS" />
+      <div class="hd-crumb"><strong>10 / References</strong></div>
+      <div class="hd-num"><strong>11</strong> / 11</div>
+    </div>
+    <div class="content">
+      <div class="lead-rule"></div>
+      <h2 class="action-title">References and <em>data sources</em>.</h2>
+      <p class="subtitle">The dataset, frameworks and methods behind this analysis.</p>
+
+      <div class="exhibit">
+        <div class="ref-grid">
+          <div class="ref-col">
+            <h4>Dataset</h4>
+            <ul>
+              <li>Olist (2018). <strong>Brazilian E-Commerce Public Dataset by Olist.</strong> Kaggle.<br/><span class="mono">kaggle.com/datasets/olistbr/brazilian-ecommerce</span></li>
+              <li>~100,000 orders placed across Brazil, 2016–2018, in 9 relational tables (orders, items, customers, sellers, products, reviews, payments, geolocation).</li>
+            </ul>
+          </div>
+          <div class="ref-col">
+            <h4>Frameworks and tools</h4>
+            <ul>
+              <li><strong>Apache Spark 3.5 / PySpark</strong> — distributed ETL, SparkSQL, MLlib, Structured Streaming</li>
+              <li><strong>GraphFrames 0.8.3</strong> — PageRank, connected components, motifs, BFS, label propagation</li>
+              <li><strong>PyTorch 2.8</strong> — LSTM, trained through Spark's TorchDistributor</li>
+              <li><strong>Plotly</strong> — management-ready visualisation</li>
+            </ul>
+          </div>
+          <div class="ref-col">
+            <h4>Methods</h4>
+            <ul>
+              <li>Page, Brin, Motwani &amp; Winograd (1999). The PageRank Citation Ranking.</li>
+              <li>Raghavan, Albert &amp; Kumara (2007). Near-linear-time community detection (label propagation).</li>
+              <li>Friedman (2001). Greedy Function Approximation: a Gradient Boosting Machine.</li>
+              <li>Hochreiter &amp; Schmidhuber (1997). Long Short-Term Memory.</li>
+            </ul>
+          </div>
+        </div>
+      </div>
+    </div>
+    <div class="ft">
+      <div class="ft-source">Dataset licensed under CC BY-NC-SA 4.0 · accessed via Kaggle, 2026.</div>
       <div class="ft-brand">Olist Supply-Chain Risk · BigDataCompany × NOVA IMS</div>
     </div>
   </section>

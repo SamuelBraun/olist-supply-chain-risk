@@ -16,12 +16,13 @@ Writes (cache-only, gitignored):
 
 from __future__ import annotations
 
+import os
 from datetime import datetime
 from pathlib import Path
 
 from pyspark.ml import Pipeline
 from pyspark.ml.evaluation import RegressionEvaluator
-from pyspark.ml.feature import Imputer, VectorAssembler
+from pyspark.ml.feature import Imputer, StringIndexer, VectorAssembler
 from pyspark.ml.regression import GBTRegressor, RandomForestRegressor
 from pyspark.ml.tuning import CrossValidator, ParamGridBuilder
 from pyspark.sql import DataFrame, SparkSession
@@ -42,8 +43,43 @@ from ..loaders import (
 )
 from ..transforms import delivery_delay_days, geolocation_centroids
 
-FEATURE_COLS = ["week_num", "lag_1", "lag_4", "rolling_4w_mean", "month", "is_q4"]
-LAG_IMPUTE_COLS = ["lag_1", "lag_4", "rolling_4w_mean"]
+FEATURE_COLS = [
+    "week_num",
+    "lag_1",
+    "lag_4",
+    "rolling_4w_mean",
+    "decay_wtd_8w",
+    "month",
+    "is_q4",
+]
+LAG_IMPUTE_COLS = ["lag_1", "lag_4", "rolling_4w_mean", "decay_wtd_8w"]
+
+#: Geometric-decay weighting for the time-weighted recent-demand feature.
+#: Weight on the k-th most recent week is DECAY_ALPHA**(k-1), so the most
+#: recent week dominates and the contribution fades over an 8-week lookback.
+#: A bounded window (not a true infinite-history EWMA) keeps it big-data-safe:
+#: it is plain Window `lag()` arithmetic, no sequential per-partition scan.
+DECAY_HORIZONS = [1, 2, 3, 4, 5, 6, 7, 8]
+DECAY_ALPHA = 0.6
+
+#: Validation switch (CLAUDE.md workflow). When OLIST_LIGHT=1, every
+#: ParamGridBuilder shrinks to 1–2 combinations and CrossValidator uses
+#: numFolds=2 so a smoke run completes in minutes. Unset (the heavy nightly
+#: run) keeps the full grids and 3-fold CV.
+LIGHT = os.environ.get("OLIST_LIGHT") == "1"
+
+#: Regional-forecast feature layout (see fit_regional_forecast).
+REGIONAL_FEATURE_COLS = [
+    "lag_1",
+    "lag_2",
+    "lag_4",
+    "rolling_4w_mean",
+    "decay_wtd_8w",
+    "month",
+    "week_of_year",
+    "state_index",
+]
+REGIONAL_LAG_IMPUTE_COLS = ["lag_1", "lag_2", "lag_4", "rolling_4w_mean", "decay_wtd_8w"]
 
 _DEMAND_CODE_DEPS = [
     "src/olist/pipeline/demand.py",
@@ -342,9 +378,46 @@ def build_feature_pipeline() -> Pipeline:
     return Pipeline(stages=[imputer, assembler])
 
 
+def decay_weighted_recent_mean(value_col, window, horizons=None, alpha=None):
+    """Geometric-decay weighted average of `value_col` over the last
+    `len(horizons)` weeks within `window`. The k-th most recent week carries
+    weight ``alpha**(k-1)`` (recent-dominant), normalised to sum to 1.
+
+    This is a *bounded* recent-demand momentum feature, not a true EWMA: a real
+    exponentially weighted moving average integrates the entire history and
+    needs a sequential per-partition scan, which does not parallelise. A fixed
+    8-week decayed lookback is the same intuition (recent weeks matter more)
+    expressed as plain Window `lag()` arithmetic, so it stays big-data-safe and
+    distributes like any other windowed feature.
+
+    Returns a Column. Null at the series start (when the deepest lag is null),
+    which the train-only Imputer fills downstream — consistent with `lag_4`.
+    """
+    horizons = horizons or DECAY_HORIZONS
+    alpha = DECAY_ALPHA if alpha is None else alpha
+    weights = [alpha ** i for i in range(len(horizons))]
+    weight_sum = sum(weights)
+    weighted_terms = [
+        F.lag(value_col, h).over(window) * F.lit(w / weight_sum)
+        for h, w in zip(horizons, weights)
+    ]
+    expr = weighted_terms[0]
+    for term in weighted_terms[1:]:
+        expr = expr + term
+    return expr
+
+
 def add_weekly_features(weekly_order_volume: DataFrame) -> DataFrame:
-    """Window lags + rolling + calendar features, then run through the
-    fit feature pipeline. Output has a ready-to-fit ``features`` vector."""
+    """Window lags + rolling + calendar features. Also attaches a *global*
+    calendar-week ordinal (`global_week_idx`) so downstream code can do a
+    calendar-time train/test split that is comparable across sellers, rather
+    than the per-seller `week_num` that biased the old split toward
+    long-tenure sellers.
+
+    NOTE: this returns the *un-imputed* feature frame (no `features` vector).
+    The Imputer + VectorAssembler must be fit on the TRAIN split only to avoid
+    leakage; `fit_and_score` does that fit after the calendar split.
+    """
     w_seller = Window.partitionBy("seller_id").orderBy("year_week")
     w_roll4 = w_seller.rowsBetween(-4, -1)
     base = (
@@ -352,52 +425,177 @@ def add_weekly_features(weekly_order_volume: DataFrame) -> DataFrame:
         .withColumn("lag_1", F.lag("weekly_order_count", 1).over(w_seller))
         .withColumn("lag_4", F.lag("weekly_order_count", 4).over(w_seller))
         .withColumn("rolling_4w_mean", F.avg("weekly_order_count").over(w_roll4))
+        .withColumn(
+            "decay_wtd_8w",
+            decay_weighted_recent_mean("weekly_order_count", w_seller),
+        )
         .withColumn("month", F.substring("year_week", 6, 2).cast("int"))
         .withColumn("is_q4", (F.col("month") >= 10).cast("int"))
     )
-    return build_feature_pipeline().fit(base).transform(base)
+    return with_global_week_index(base)
+
+
+def with_global_week_index(df: DataFrame, week_col: str = "year_week") -> DataFrame:
+    """Attach a dense global calendar-week ordinal `global_week_idx` derived
+    from the lexicographic order of distinct `year_week` strings (`YYYY-WW`,
+    zero-padded, so string order == calendar order). The same ordinal is shared
+    across all sellers/states, which is what makes a calendar-time split
+    unbiased w.r.t. series length.
+    """
+    distinct_weeks = (
+        df.select(week_col).distinct().withColumn(
+            "global_week_idx",
+            F.dense_rank().over(Window.orderBy(week_col)) - 1,
+        )
+    )
+    return df.join(broadcast(distinct_weeks), on=week_col, how="left")
+
+
+def calendar_split_threshold(
+    df: DataFrame, holdout_frac: float = 0.2, idx_col: str = "global_week_idx"
+) -> int:
+    """Return the global-week ordinal at/under which a row is TRAIN. The latest
+    ~`holdout_frac` of distinct calendar weeks become the test set. Computed
+    from min/max of the dense ordinal, so it does not depend on per-seller
+    tenure.
+    """
+    # BIG-DATA-SAFETY-ESCAPE: SMALL_SUMMARY_COLLECT
+    bounds = df.agg(
+        F.min(idx_col).alias("lo"), F.max(idx_col).alias("hi")
+    ).first()
+    lo, hi = int(bounds["lo"]), int(bounds["hi"])
+    span = hi - lo
+    return lo + int(round(span * (1.0 - holdout_frac)))
+
+
+def fit_feature_split(
+    base: DataFrame,
+    feature_cols: list[str],
+    impute_cols: list[str],
+    holdout_frac: float = 0.2,
+) -> tuple[DataFrame, DataFrame, float]:
+    """Calendar-time split + leakage-free feature assembly.
+
+    1. Split on the global calendar-week ordinal (latest `holdout_frac` of
+       weeks = test) so the test set is not biased toward long-tenure series.
+    2. Fit the Imputer (median, for series-start lag NaNs) + VectorAssembler
+       on TRAIN ONLY, then transform both splits with that fit model.
+
+    Returns (train_df, test_df, split_idx). Both frames carry a `features`
+    vector plus `label` and the passthrough id columns already on `base`.
+    """
+    split_idx = calendar_split_threshold(base, holdout_frac)
+    train_raw = base.filter(F.col("global_week_idx") <= split_idx)
+    test_raw = base.filter(F.col("global_week_idx") > split_idx)
+
+    imputer = Imputer(
+        inputCols=impute_cols, outputCols=impute_cols, strategy="median"
+    )
+    assembler = VectorAssembler(
+        inputCols=feature_cols, outputCol="features", handleInvalid="skip"
+    )
+    fit_pipeline = Pipeline(stages=[imputer, assembler]).fit(train_raw)  # TRAIN ONLY
+    train_df = fit_pipeline.transform(train_raw)
+    test_df = fit_pipeline.transform(test_raw)
+    return train_df, test_df, float(split_idx)
+
+
+def naive_baseline_rmses(
+    test_df: DataFrame,
+    train_df: DataFrame,
+    label_col: str = "label",
+) -> dict[str, float]:
+    """RMSE of three naive baselines on the SAME held-out test rows:
+    persistence (`lag_1`), `rolling_4w_mean`, and the global TRAIN mean.
+
+    `lag_1` / `rolling_4w_mean` are post-imputation here (so no NaNs leak in),
+    which matches how the ML models see them. The train-mean baseline uses the
+    mean of TRAIN labels only — no test leakage.
+    """
+    # BIG-DATA-SAFETY-ESCAPE: SMALL_SUMMARY_COLLECT
+    train_mean = float(train_df.agg(F.avg(label_col)).first()[0] or 0.0)
+    evaluator = RegressionEvaluator(
+        labelCol=label_col, predictionCol="prediction", metricName="rmse"
+    )
+
+    def _rmse(pred_col_expr) -> float:
+        scored = test_df.withColumn("prediction", pred_col_expr.cast("double"))
+        return float(evaluator.evaluate(scored))
+
+    return {
+        "persistence_lag1_rmse": _rmse(F.col("lag_1")),
+        "rolling_4w_mean_rmse": _rmse(F.col("rolling_4w_mean")),
+        "train_mean_rmse": _rmse(F.lit(train_mean)),
+    }
 
 
 GBT_SEED = 7341
 RF_SEED = 2918
 
 
-def build_cv_estimators(evaluator: RegressionEvaluator) -> dict:
+def build_cv_estimators(
+    evaluator: RegressionEvaluator, features_col: str = "features"
+) -> dict:
     """Construct both CrossValidators with their param grids.
 
     Seeds: GBT_SEED=7341, RF_SEED=2918 (distinct, not tutorial defaults).
     `parallelism=2` keeps fold-fit workers bounded on a single driver.
-    Grids: GBT 3x2x2 = 12 combos, RF 2x2x2 = 8 combos.
+
+    Grid size honours the LIGHT switch:
+    * full (LIGHT off): GBT 3x2x2 = 12 combos, RF 2x2x2 = 8 combos, numFolds=3.
+    * LIGHT on: GBT 1x1x2 = 2 combos, RF 1x1x2 = 2 combos, numFolds=2 — a fast
+      smoke run that still exercises the ParamGridBuilder/CrossValidator path.
     """
-    gbt = GBTRegressor(featuresCol="features", labelCol="label", seed=GBT_SEED)
-    gbt_grid = (
-        ParamGridBuilder()
-        .addGrid(gbt.maxDepth, [3, 5, 7])
-        .addGrid(gbt.stepSize, [0.05, 0.1])
-        .addGrid(gbt.maxIter, [20, 40])
-        .build()
-    )
+    num_folds = 2 if LIGHT else 3
+    gbt = GBTRegressor(featuresCol=features_col, labelCol="label", seed=GBT_SEED)
+    if LIGHT:
+        gbt_grid = (
+            ParamGridBuilder()
+            .addGrid(gbt.maxDepth, [3])
+            .addGrid(gbt.stepSize, [0.1])
+            .addGrid(gbt.maxIter, [20, 40])
+            .build()
+        )
+    else:
+        gbt_grid = (
+            ParamGridBuilder()
+            .addGrid(gbt.maxDepth, [3, 5, 7])
+            .addGrid(gbt.stepSize, [0.05, 0.1])
+            .addGrid(gbt.maxIter, [20, 40])
+            .build()
+        )
     gbt_cv = CrossValidator(
         estimator=gbt,
         estimatorParamMaps=gbt_grid,
         evaluator=evaluator,
-        numFolds=3,
+        numFolds=num_folds,
         seed=GBT_SEED,
         parallelism=2,
     )
-    rf = RandomForestRegressor(featuresCol="features", labelCol="label", seed=RF_SEED)
-    rf_grid = (
-        ParamGridBuilder()
-        .addGrid(rf.maxDepth, [5, 10])
-        .addGrid(rf.numTrees, [40, 80])
-        .addGrid(rf.subsamplingRate, [0.8, 1.0])
-        .build()
+    rf = RandomForestRegressor(
+        featuresCol=features_col, labelCol="label", seed=RF_SEED
     )
+    if LIGHT:
+        rf_grid = (
+            ParamGridBuilder()
+            .addGrid(rf.maxDepth, [10])
+            .addGrid(rf.numTrees, [40])
+            .addGrid(rf.subsamplingRate, [0.8, 1.0])
+            .build()
+        )
+    else:
+        rf_grid = (
+            ParamGridBuilder()
+            .addGrid(rf.maxDepth, [5, 10])
+            .addGrid(rf.numTrees, [40, 80])
+            .addGrid(rf.subsamplingRate, [0.8, 1.0])
+            .build()
+        )
     rf_cv = CrossValidator(
         estimator=rf,
         estimatorParamMaps=rf_grid,
         evaluator=evaluator,
-        numFolds=3,
+        numFolds=num_folds,
         seed=RF_SEED,
         parallelism=2,
     )
@@ -418,16 +616,24 @@ def build_cv_estimators(evaluator: RegressionEvaluator) -> dict:
         "outputs/nb1_seller_demand_scores.parquet",
     ],
     code_deps=_DEMAND_CODE_DEPS,
-    version=2,
+    version=3,
 )
 def fit_and_score(spark: SparkSession) -> dict[str, DataFrame]:
-    """Fit GBT + RF via `CrossValidator(numFolds=3)`, pick the best by test
-    RMSE, then score every seller.
+    """Fit GBT + RF via `CrossValidator` (3-fold; 2-fold under LIGHT), pick the
+    best by held-out test RMSE, compare against three naive baselines on the
+    SAME test rows, then score every seller.
 
-    Returns three DataFrames keyed by their parquet stem:
+    The split is a *global calendar-time* split (latest ~20% of calendar weeks
+    held out across all sellers), and the Imputer/VectorAssembler are fit on the
+    TRAIN split only — both fixes vs. the earlier per-seller-index split that
+    biased the test set toward long-tenure sellers and leaked the imputer median.
+
+    Returns four DataFrames keyed by their parquet stem:
     * `demand_predictions` — (seller_id, year_week, week_num, label, prediction)
       on the full `model_data`.
-    * `demand_metrics` — one row: (gbt_rmse, rf_rmse, best_name).
+    * `demand_metrics` — one row: (gbt_rmse, rf_rmse, best_name,
+      persistence_lag1_rmse, rolling_4w_mean_rmse, train_mean_rmse).
+    * `demand_feature_importances` — (feature, importance) for the winner.
     * `nb1_seller_demand_scores` — (seller_id, seller_state, forecast_uplift_pct,
       avg_delay_days, delay_risk_flag).
     """
@@ -435,8 +641,8 @@ def fit_and_score(spark: SparkSession) -> dict[str, DataFrame]:
     order_lines = spark.read.parquet(resolve_path("outputs/_cache/demand_order_lines.parquet"))
     sellers = load_sellers(spark)
 
-    weekly_features = add_weekly_features(weekly)
-    model_data = weekly_features.filter(
+    weekly_features = add_weekly_features(weekly)  # un-imputed base + global_week_idx
+    model_base = weekly_features.filter(
         F.col("lag_1").isNotNull()
         & F.col("lag_4").isNotNull()
         & F.col("rolling_4w_mean").isNotNull()
@@ -444,24 +650,33 @@ def fit_and_score(spark: SparkSession) -> dict[str, DataFrame]:
         "seller_id",
         "year_week",
         "week_num",
-        "features",
+        "global_week_idx",
+        *LAG_IMPUTE_COLS,
+        "month",
+        "is_q4",
         F.col("weekly_order_count").cast("double").alias("label"),
     )
 
-    split_week = model_data.approxQuantile("week_num", [0.8], 0.01)[0]
+    # Calendar-time split + train-only imputer/assembler fit (no leakage).
+    train_df, test_df, split_idx = fit_feature_split(
+        model_base, FEATURE_COLS, LAG_IMPUTE_COLS, holdout_frac=0.2
+    )
     # Cache the train split: each CrossValidator re-reads it numFolds × gridSize
-    # times (3×12 for GBT, 3×8 for RF = 60 fits). Without this, every fit
-    # recomputes the window-feature lineage from parquet and re-shuffles, which
-    # spills tens of GB of shuffle data and exhausts local disk (CLAUDE.md §3).
-    train_df = model_data.filter(F.col("week_num") <= split_week).cache()
-    test_df = model_data.filter(F.col("week_num") > split_week)
+    # times. Without this, every fit recomputes the window-feature lineage from
+    # parquet and re-shuffles, which spills shuffle data and exhausts local disk
+    # (CLAUDE.md §3).
+    train_df = train_df.cache()
+    test_df = test_df.cache()
     train_df.count()  # materialise the cache before the CV loop
+    test_df.count()
 
     evaluator = RegressionEvaluator(
         labelCol="label", predictionCol="prediction", metricName="rmse"
     )
     cv = build_cv_estimators(evaluator)
 
+    print(f"Calendar-time split at global_week_idx={int(split_idx)} "
+          f"(LIGHT={LIGHT})")
     print("Fitting GBT CV ...")
     gbt_model = cv["gbt_cv"].fit(train_df)
     print("Fitting RF CV ...")
@@ -469,7 +684,18 @@ def fit_and_score(spark: SparkSession) -> dict[str, DataFrame]:
 
     gbt_rmse = evaluator.evaluate(gbt_model.transform(test_df))
     rf_rmse = evaluator.evaluate(rf_model.transform(test_df))
+
+    # Naive baselines on the SAME held-out rows: persistence, rolling-4w, mean.
+    baselines = naive_baseline_rmses(test_df, train_df)
+    print(
+        "Baselines (test RMSE): "
+        f"persistence(lag_1)={baselines['persistence_lag1_rmse']:.3f}  "
+        f"rolling_4w_mean={baselines['rolling_4w_mean_rmse']:.3f}  "
+        f"train_mean={baselines['train_mean_rmse']:.3f}"
+    )
+
     train_df.unpersist()  # done with the train split; free it before scoring
+    test_df.unpersist()
 
     def _winning_params(cv_model, param_names):
         bm = cv_model.bestModel
@@ -483,7 +709,19 @@ def fit_and_score(spark: SparkSession) -> dict[str, DataFrame]:
     best_name = "GBT" if best_model is gbt_model else "RandomForest"
     print(f"Selected: {best_name}")
 
-    predictions_all = best_model.transform(model_data).select(
+    # Score the full series. The full frame must carry the same `features`
+    # vector, built with the SAME train-fit imputer/assembler (refit on train
+    # only inside fit_feature_split); rebuild it here on the un-split base.
+    full_imputer = Imputer(
+        inputCols=LAG_IMPUTE_COLS, outputCols=LAG_IMPUTE_COLS, strategy="median"
+    )
+    full_assembler = VectorAssembler(
+        inputCols=FEATURE_COLS, outputCol="features", handleInvalid="skip"
+    )
+    train_only = model_base.filter(F.col("global_week_idx") <= split_idx)
+    full_fit = Pipeline(stages=[full_imputer, full_assembler]).fit(train_only)
+    model_data_vec = full_fit.transform(model_base)
+    predictions_all = best_model.transform(model_data_vec).select(
         "seller_id", "year_week", "week_num", "label", "prediction"
     )
 
@@ -532,8 +770,19 @@ def fit_and_score(spark: SparkSession) -> dict[str, DataFrame]:
     )
 
     metrics_row = spark.createDataFrame(
-        [(float(gbt_rmse), float(rf_rmse), best_name)],
-        schema="gbt_rmse double, rf_rmse double, best_name string",
+        [(
+            float(gbt_rmse),
+            float(rf_rmse),
+            best_name,
+            float(baselines["persistence_lag1_rmse"]),
+            float(baselines["rolling_4w_mean_rmse"]),
+            float(baselines["train_mean_rmse"]),
+        )],
+        schema=(
+            "gbt_rmse double, rf_rmse double, best_name string, "
+            "persistence_lag1_rmse double, rolling_4w_mean_rmse double, "
+            "train_mean_rmse double"
+        ),
     )
 
     fi_vector = best_model.bestModel.featureImportances.toArray()
@@ -566,3 +815,199 @@ def predictions_sample(spark: SparkSession, n: int = 1000) -> DataFrame:
     return spark.read.parquet(
         resolve_path("outputs/_cache/demand_predictions.parquet")
     ).limit(n)
+
+
+# ---------------------------------------------------------------------------
+# Regional demand forecast
+#
+# The seller-level model (above) is intentionally noisy: most sellers have
+# short, sparse weekly series, so per-seller forecasting is closer to a
+# warm-up than a planning tool. Aggregating to (seller_state, year_week) gives
+# ~27 dense, long state-level series — the level at which a forecast is
+# actually decision-grade for regional capacity planning. This is the genuine
+# forecasting deliverable; the seller model stays for the per-seller risk
+# `avg_delay_days`/`forecast_uplift_pct` features the §6 index consumes.
+# ---------------------------------------------------------------------------
+
+
+@step(
+    name="demand.regional_weekly_volume",
+    inputs=["outputs/_cache/demand_order_lines.parquet"],
+    outputs=["outputs/_cache/demand_regional_weekly_volume.parquet"],
+    code_deps=_DEMAND_CODE_DEPS,
+    version=1,
+)
+def build_regional_weekly_volume(spark: SparkSession) -> DataFrame:
+    """Aggregate delivered order-lines to (seller_state, year_week,
+    weekly_order_count). One dense weekly series per Brazilian state — the
+    base for the regional forecast.
+    """
+    order_lines = spark.read.parquet(
+        resolve_path("outputs/_cache/demand_order_lines.parquet")
+    )
+    return (
+        order_lines.filter(F.col("seller_state").isNotNull())
+        .groupBy("seller_state", "year_week")
+        .agg(F.count("*").alias("weekly_order_count"))
+        .repartition("seller_state")
+    )
+
+
+def add_regional_features(regional_weekly_volume: DataFrame) -> DataFrame:
+    """Window lags (1/2/4) + rolling-4 mean + calendar features (month,
+    week_of_year) + a `state_index` per seller_state, plus the shared global
+    calendar-week ordinal. Returns the un-imputed feature base (no `features`
+    vector — the Imputer/assembler are fit train-only in `fit_regional_forecast`).
+    """
+    w_state = Window.partitionBy("seller_state").orderBy("year_week")
+    w_roll4 = w_state.rowsBetween(-4, -1)
+    state_indexer = StringIndexer(
+        inputCol="seller_state", outputCol="state_index", handleInvalid="keep"
+    )
+    base = (
+        regional_weekly_volume.withColumn("lag_1", F.lag("weekly_order_count", 1).over(w_state))
+        .withColumn("lag_2", F.lag("weekly_order_count", 2).over(w_state))
+        .withColumn("lag_4", F.lag("weekly_order_count", 4).over(w_state))
+        .withColumn("rolling_4w_mean", F.avg("weekly_order_count").over(w_roll4))
+        .withColumn(
+            "decay_wtd_8w",
+            decay_weighted_recent_mean("weekly_order_count", w_state),
+        )
+        .withColumn("month", F.substring("year_week", 6, 2).cast("int"))
+        .withColumn("week_of_year", F.substring("year_week", 6, 2).cast("int"))
+    )
+    base = state_indexer.fit(base).transform(base)
+    return with_global_week_index(base)
+
+
+@step(
+    name="demand.regional_forecast",
+    inputs=["outputs/_cache/demand_regional_weekly_volume.parquet"],
+    outputs=[
+        "outputs/nb1_regional_demand_forecast.parquet",
+        "outputs/_cache/demand_regional_metrics.parquet",
+    ],
+    code_deps=_DEMAND_CODE_DEPS,
+    version=1,
+)
+def fit_regional_forecast(spark: SparkSession) -> dict[str, DataFrame]:
+    """Train GBT + RF under CrossValidator on the regional weekly series,
+    compare against persistence (`lag_1`) and rolling-4w baselines on a
+    calendar-time test split, and write per-(state, week) actual-vs-predicted.
+
+    The split holds out the latest ~20% of CALENDAR weeks (shared global
+    ordinal) and the Imputer/VectorAssembler are fit on TRAIN only.
+
+    Writes:
+    * `nb1_regional_demand_forecast` — (seller_state, year_week, actual,
+      predicted, model_rmse, baseline_rmse). `model_rmse`/`baseline_rmse` are
+      broadcast constants (the winning model's test RMSE and the best naive
+      baseline's test RMSE) repeated on every row for easy charting.
+    * `demand_regional_metrics` — one row with the full metric breakdown.
+
+    Returns a small metrics summary dict (the `demand_regional_metrics` frame).
+    """
+    regional = spark.read.parquet(
+        resolve_path("outputs/_cache/demand_regional_weekly_volume.parquet")
+    )
+    feature_base = add_regional_features(regional)
+    model_base = feature_base.filter(
+        F.col("lag_1").isNotNull()
+        & F.col("lag_2").isNotNull()
+        & F.col("lag_4").isNotNull()
+        & F.col("rolling_4w_mean").isNotNull()
+    ).select(
+        "seller_state",
+        "year_week",
+        "global_week_idx",
+        *REGIONAL_FEATURE_COLS,
+        F.col("weekly_order_count").cast("double").alias("label"),
+    )
+
+    train_df, test_df, split_idx = fit_feature_split(
+        model_base, REGIONAL_FEATURE_COLS, REGIONAL_LAG_IMPUTE_COLS, holdout_frac=0.2
+    )
+    train_df = train_df.cache()
+    test_df = test_df.cache()
+    train_df.count()
+    test_df.count()
+
+    evaluator = RegressionEvaluator(
+        labelCol="label", predictionCol="prediction", metricName="rmse"
+    )
+    cv = build_cv_estimators(evaluator)
+
+    print(f"[regional] calendar-time split at global_week_idx={int(split_idx)} "
+          f"(LIGHT={LIGHT})")
+    print("[regional] Fitting GBT CV ...")
+    gbt_model = cv["gbt_cv"].fit(train_df)
+    print("[regional] Fitting RF CV ...")
+    rf_model = cv["rf_cv"].fit(train_df)
+
+    gbt_rmse = evaluator.evaluate(gbt_model.transform(test_df))
+    rf_rmse = evaluator.evaluate(rf_model.transform(test_df))
+    baselines = naive_baseline_rmses(test_df, train_df)
+    print(
+        f"[regional] GBT={gbt_rmse:.3f}  RF={rf_rmse:.3f}  "
+        f"persistence={baselines['persistence_lag1_rmse']:.3f}  "
+        f"rolling_4w={baselines['rolling_4w_mean_rmse']:.3f}  "
+        f"train_mean={baselines['train_mean_rmse']:.3f}"
+    )
+
+    best_model = gbt_model if gbt_rmse <= rf_rmse else rf_model
+    best_name = "GBT" if best_model is gbt_model else "RandomForest"
+    model_rmse = min(gbt_rmse, rf_rmse)
+    baseline_rmse = min(
+        baselines["persistence_lag1_rmse"], baselines["rolling_4w_mean_rmse"]
+    )
+    print(f"[regional] selected {best_name} (model_rmse={model_rmse:.3f} "
+          f"vs best baseline_rmse={baseline_rmse:.3f})")
+
+    # Score the full series with a train-only-fit imputer/assembler.
+    full_imputer = Imputer(
+        inputCols=REGIONAL_LAG_IMPUTE_COLS,
+        outputCols=REGIONAL_LAG_IMPUTE_COLS,
+        strategy="median",
+    )
+    full_assembler = VectorAssembler(
+        inputCols=REGIONAL_FEATURE_COLS, outputCol="features", handleInvalid="skip"
+    )
+    train_only = model_base.filter(F.col("global_week_idx") <= split_idx)
+    full_fit = Pipeline(stages=[full_imputer, full_assembler]).fit(train_only)
+    scored_full = best_model.transform(full_fit.transform(model_base))
+
+    forecast = (
+        scored_full.select(
+            "seller_state",
+            "year_week",
+            F.col("label").alias("actual"),
+            F.col("prediction").alias("predicted"),
+        )
+        .withColumn("model_rmse", F.lit(float(model_rmse)))
+        .withColumn("baseline_rmse", F.lit(float(baseline_rmse)))
+    )
+
+    train_df.unpersist()
+    test_df.unpersist()
+
+    metrics_row = spark.createDataFrame(
+        [(
+            float(gbt_rmse),
+            float(rf_rmse),
+            best_name,
+            float(baselines["persistence_lag1_rmse"]),
+            float(baselines["rolling_4w_mean_rmse"]),
+            float(baselines["train_mean_rmse"]),
+            int(split_idx),
+        )],
+        schema=(
+            "gbt_rmse double, rf_rmse double, best_name string, "
+            "persistence_lag1_rmse double, rolling_4w_mean_rmse double, "
+            "train_mean_rmse double, split_week_idx int"
+        ),
+    )
+
+    return {
+        "nb1_regional_demand_forecast": forecast,
+        "demand_regional_metrics": metrics_row,
+    }

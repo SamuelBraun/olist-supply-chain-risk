@@ -11,14 +11,23 @@ Writes:
 
 Weights and thresholds are fixed in advance (CLAUDE.md §4):
 * 0.35 × demand_norm + 0.35 × sentiment_norm + 0.30 × network_norm.
-* CRITICAL > 0.75, SAFE < 0.40, WARNING otherwise.
+* Percentile bands on the composite: CRITICAL = top 1%, WARNING = next 4%,
+  SAFE = bottom 95%.
+
+Normalisation is percentile-rank (not min-max on p1/p99 bounds). Min-max left
+``demand_norm`` (std 0.034) and ``network_norm`` (std 0.056) nearly constant —
+both source columns are heavily right-skewed with a long thin tail, so once you
+clamp to p1/p99 almost every seller lands near the same value. That made the
+composite ~96% the star rating (``corr(risk_score, sentiment_norm)=0.96``) and
+left the CRITICAL band mathematically dead (max risk_score 0.705 < 0.75).
+Percentile rank makes each axis ~uniform on [0, 1] so the three signals
+contribute equally under the existing weights, and percentile bands guarantee
+the CRITICAL band actually fires.
 """
 
 from __future__ import annotations
 
-from dataclasses import dataclass
-
-from pyspark.sql import DataFrame, SparkSession
+from pyspark.sql import DataFrame, SparkSession, Window
 from pyspark.sql import functions as F
 
 from ..cache import resolve_path, step
@@ -31,57 +40,30 @@ from ..safety import (  # noqa: F401 — referenced by annotation comments
 _CONV_CODE_DEPS = ["src/olist/pipeline/convergence.py"]
 
 RISK_WEIGHTS = {"demand": 0.35, "sentiment": 0.35, "network": 0.30}
+# Percentile cut-points on the composite risk_score (fraction of population).
+RISK_CRITICAL_PCTL = 0.99  # top 1% → CRITICAL
+RISK_WARNING_PCTL = 0.95   # next 4% (>0.95, ≤0.99) → WARNING; ≤0.95 → SAFE
+
+# Retained for import-compatibility with scripts/build_main.py. Banding is now
+# percentile-based (see RISK_*_PCTL), so these absolute thresholds are no longer
+# used to assign risk_class — kept only so existing imports/prints don't break.
 RISK_CRITICAL_THRESHOLD = 0.75
 RISK_SAFE_THRESHOLD = 0.40
 
 
-@dataclass
-class NormalisationRanges:
-    """p1/p99 bounds per pre-normalised column, used as broadcast literals for
-    min-max normalisation. Percentile bounds (not raw min/max) so one extreme
-    seller can't compress everyone else's normalised score.
+def _percentile_rank(col: str, invert: bool = False):
+    """Percentile-rank a column into [0, 1] via a window ``percent_rank()``.
+
+    ``percent_rank`` returns ``(rank - 1) / (n - 1)`` over the ordered
+    partition, so the lowest value maps to 0.0, the highest to 1.0, and the
+    population is spread ~uniformly in between regardless of the raw column's
+    skew. This is what lets the three axes contribute equally under fixed
+    weights — each becomes a rank, not a clamped distance from a percentile
+    bound. ``invert=True`` ranks descending (used for sentiment, where a higher
+    star rating means *lower* risk).
     """
-
-    delay_lo: float
-    delay_hi: float
-    sentiment_lo: float
-    sentiment_hi: float
-    contagion_lo: float
-    contagion_hi: float
-    deficit_lo: float
-    deficit_hi: float
-
-
-def compute_normalisation_ranges(joined: DataFrame) -> NormalisationRanges:
-    """Extract p1/p99 bounds for the four pre-normalised columns via
-    `approxQuantile`. Percentile bounds tame the long tails (delay outliers,
-    the 68%-zero contagion column) that raw min/max would otherwise let
-    dominate the scale.
-    """
-    # BIG-DATA-SAFETY-ESCAPE: RISK_NORM_AGG — approxQuantile on a ~3k-row frame
-    delay_lo, delay_hi = joined.approxQuantile("avg_delay_days", [0.01, 0.99], 0.01)
-    sent_lo, sent_hi = joined.approxQuantile("avg_sentiment_score", [0.01, 0.99], 0.01)
-    cont_lo, cont_hi = joined.approxQuantile("network_risk_score", [0.01, 0.99], 0.01)
-    def_lo, def_hi = joined.approxQuantile("substitutability_deficit", [0.01, 0.99], 0.01)
-    return NormalisationRanges(
-        delay_lo=float(delay_lo),
-        delay_hi=float(delay_hi),
-        sentiment_lo=float(sent_lo),
-        sentiment_hi=float(sent_hi),
-        contagion_lo=float(cont_lo),
-        contagion_hi=float(cont_hi),
-        deficit_lo=float(def_lo),
-        deficit_hi=float(def_hi),
-    )
-
-
-def _min_max(col: str, lo: float, hi: float, invert: bool = False):
-    # Scale to [0, 1] then clamp, so sellers past the p1/p99 bounds saturate
-    # instead of producing scores outside [0, 1].
-    span = (hi - lo) if (hi - lo) != 0 else 1.0
-    scaled = (F.col(col) - lo) / span
-    clamped = F.greatest(F.lit(0.0), F.least(F.lit(1.0), scaled))
-    return (F.lit(1.0) - clamped) if invert else clamped
+    order = F.col(col).desc() if invert else F.col(col).asc()
+    return F.percent_rank().over(Window.orderBy(order))
 
 
 @step(
@@ -93,22 +75,27 @@ def _min_max(col: str, lo: float, hi: float, invert: bool = False):
     ],
     outputs=["outputs/seller_risk_index.parquet"],
     code_deps=_CONV_CODE_DEPS,
-    version=1,
+    version=2,
 )
 def build_seller_risk_index(spark: SparkSession) -> DataFrame:
-    """Inner-join the three per-seller parquets, min-max normalise each
-    risk component, weight 0.35/0.35/0.30, band CRITICAL/WARNING/SAFE,
-    write `outputs/seller_risk_index.parquet`.
+    """Inner-join the three per-seller parquets, percentile-rank normalise each
+    risk component, weight 0.35/0.35/0.30, band the composite by percentile
+    (CRITICAL top 1% / WARNING next 4% / SAFE bottom 95%), write
+    `outputs/seller_risk_index.parquet`.
 
-    Sentiment is inverted (higher = worse) so all three `*_norm` columns
-    point in the same direction: higher = more risky.
+    Each `*_norm` column is the seller's percentile rank in [0, 1] for that
+    component, so all four point the same direction (higher = more risky) and
+    each axis is ~uniform on [0, 1]. Sentiment is ranked descending (a higher
+    star rating is *lower* risk). Percentile ranking replaced the old
+    min-max(p1/p99) scaling, which left demand and network nearly constant and
+    let the star rating dominate the composite.
 
     The network axis is a 50/50 blend of *contagion* (delayed-subgraph
     PageRank — a late-shipping hub) and *substitutability deficit* (high
-    impact, no backup). The deficit half is graph-unique and non-degenerate
-    across the whole population, so the network axis no longer collapses to a
-    degree proxy and is no longer zero for the two-thirds of sellers outside
-    the late-shipping subgraph.
+    impact, no backup), each percentile-ranked first. The deficit half is
+    graph-unique and non-degenerate across the whole population, so the network
+    axis no longer collapses to a degree proxy and is no longer zero for the
+    two-thirds of sellers outside the late-shipping subgraph.
     """
     demand = spark.read.parquet(resolve_path("outputs/nb1_seller_demand_scores.parquet"))
     sentiment = spark.read.parquet(resolve_path("outputs/nb2_seller_sentiment_scores.parquet"))
@@ -128,30 +115,23 @@ def build_seller_risk_index(spark: SparkSession) -> DataFrame:
             "inner",
         )
     )
-    ranges = compute_normalisation_ranges(joined)
     return (
+        # Percentile-rank each raw component into [0, 1] (sentiment descending).
         joined.withColumn(
             "demand_norm",
-            _min_max("avg_delay_days", ranges.delay_lo, ranges.delay_hi),
+            _percentile_rank("avg_delay_days"),
         )
         .withColumn(
             "sentiment_norm",
-            _min_max(
-                "avg_sentiment_score",
-                ranges.sentiment_lo,
-                ranges.sentiment_hi,
-                invert=True,
-            ),
+            _percentile_rank("avg_sentiment_score", invert=True),
         )
         .withColumn(
             "contagion_norm",
-            _min_max("network_risk_score", ranges.contagion_lo, ranges.contagion_hi),
+            _percentile_rank("network_risk_score"),
         )
         .withColumn(
             "deficit_norm",
-            _min_max(
-                "substitutability_deficit", ranges.deficit_lo, ranges.deficit_hi
-            ),
+            _percentile_rank("substitutability_deficit"),
         )
         .withColumn(
             "network_norm",
@@ -163,12 +143,18 @@ def build_seller_risk_index(spark: SparkSession) -> DataFrame:
             + RISK_WEIGHTS["sentiment"] * F.col("sentiment_norm")
             + RISK_WEIGHTS["network"] * F.col("network_norm"),
         )
+        # Band by the composite's own percentile so CRITICAL always fires.
+        .withColumn(
+            "risk_pctl",
+            F.percent_rank().over(Window.orderBy(F.col("risk_score").asc())),
+        )
         .withColumn(
             "risk_class",
-            F.when(F.col("risk_score") > RISK_CRITICAL_THRESHOLD, "CRITICAL")
-            .when(F.col("risk_score") < RISK_SAFE_THRESHOLD, "SAFE")
-            .otherwise("WARNING"),
+            F.when(F.col("risk_pctl") > RISK_CRITICAL_PCTL, "CRITICAL")
+            .when(F.col("risk_pctl") > RISK_WARNING_PCTL, "WARNING")
+            .otherwise("SAFE"),
         )
+        .drop("risk_pctl")
         .withColumn(
             "escalate_no_backup",
             (
@@ -196,6 +182,24 @@ def build_seller_risk_index(spark: SparkSession) -> DataFrame:
             "escalate_no_backup",
             "sentiment_declining",
         )
+    )
+
+
+def risk_component_correlations(spark: SparkSession) -> DataFrame:
+    """Read ``outputs/seller_risk_index.parquet`` and return the Pearson
+    correlation of ``risk_score`` with each axis as a one-row Spark DataFrame
+    with columns ``corr_demand``, ``corr_sentiment``, ``corr_network``.
+
+    The notebook prints this to prove the three signals now contribute in a
+    balanced way: under the old min-max normalisation ``corr_sentiment`` was
+    ~0.96 (the composite was essentially the star rating). With percentile-rank
+    normalisation the three correlations should be close to one another.
+    """
+    risk = spark.read.parquet(resolve_path("outputs/seller_risk_index.parquet"))
+    return risk.select(
+        F.corr("risk_score", "demand_norm").alias("corr_demand"),
+        F.corr("risk_score", "sentiment_norm").alias("corr_sentiment"),
+        F.corr("risk_score", "network_norm").alias("corr_network"),
     )
 
 

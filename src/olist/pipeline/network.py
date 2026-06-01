@@ -608,3 +608,69 @@ def build_seller_network_scores(spark: SparkSession) -> DataFrame:
             F.col("in_degree") / (F.lit(1.0) + F.col("n_cocustomer_partners")),
         )
     )
+
+
+# ---------------------------------------------------------------------------
+# Degree-proxy honesty diagnostics
+# ---------------------------------------------------------------------------
+
+
+def degree_proxy_diagnostics(spark: SparkSession) -> DataFrame:
+    """Pearson AND Spearman correlations of `in_degree` against each network
+    signal, read from `outputs/nb3_seller_network_scores.parquet`.
+
+    The Pearson corr of in_degree vs `substitutability_deficit` (~0.38) is mild,
+    which tempts the reading "the deficit is not a degree proxy". But triage runs
+    on rank order, and the *rank* (Spearman) correlation is much higher (~0.89):
+    by the metric that actually drives escalation, the deficit largely tracks
+    in-degree. This function surfaces both so the notebook can state the limit
+    honestly rather than lean on the flattering linear number.
+
+    Spearman is computed as the Pearson correlation of the rank-transformed
+    columns: each metric (and in_degree) is replaced by its `rank()` over the
+    full window via a Spark Window, then `F.corr` is taken on the ranks. Ties
+    take the ordinal `rank()` position, which is adequate for the few exact ties
+    here and keeps the computation fully Spark-native (no driver collect).
+
+    Returns a small Spark DataFrame, one row per signal:
+    (signal, pearson_corr, spearman_corr).
+    """
+    from pyspark.sql.window import Window
+
+    scores = spark.read.parquet(
+        resolve_path("outputs/nb3_seller_network_scores.parquet")
+    )
+    signals = ["pagerank_score", "substitutability_deficit", "cocustomer_centrality"]
+
+    # Rank-transform every column once (whole-frame window) for the Spearman leg.
+    ranked = scores.select("in_degree", *signals)
+    rank_cols = ["in_degree", *signals]
+    for col_name in rank_cols:
+        whole_frame = Window.orderBy(F.col(col_name))
+        ranked = ranked.withColumn(f"rank_{col_name}", F.rank().over(whole_frame))
+
+    pearson_aggs = [
+        F.corr("in_degree", signal).alias(f"pearson_{signal}") for signal in signals
+    ]
+    spearman_aggs = [
+        F.corr("rank_in_degree", f"rank_{signal}").alias(f"spearman_{signal}")
+        for signal in signals
+    ]
+    stats_row = ranked.agg(*pearson_aggs, *spearman_aggs).first()
+
+    diag_rows = [
+        (
+            signal,
+            float(stats_row[f"pearson_{signal}"])
+            if stats_row[f"pearson_{signal}"] is not None
+            else None,
+            float(stats_row[f"spearman_{signal}"])
+            if stats_row[f"spearman_{signal}"] is not None
+            else None,
+        )
+        for signal in signals
+    ]
+    return spark.createDataFrame(
+        diag_rows,
+        "signal string, pearson_corr double, spearman_corr double",
+    )
