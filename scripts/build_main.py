@@ -397,7 +397,7 @@ md("""### 3.5 Feature engineering. Window-based lags + rolling, ML Pipeline
 This subsection demonstrates two more PySpark primitives:
 
 1. **Window functions.** `Window.partitionBy(seller_id).orderBy(year_week)` provides per-seller lag-1 and lag-4, a 4-week rolling mean (`rowsBetween(-4, -1)`), and a time-weighted momentum term `decay_wtd_8w` — a geometrically decayed eight-week lookback (weight `0.6^k` on the k-th most recent week) that captures recent demand trend more sharply than the flat rolling mean.
-2. **`pyspark.ml.Pipeline`.** Two stages: `Imputer` (median-imputes the lag features for the first weeks of each seller's history) and `VectorAssembler` (bundles the seven model features into a `Vector` column ready for MLlib).""")
+2. **`pyspark.ml.Pipeline`.** Two stages: `Imputer` (median-imputes the lag features for the first weeks of each seller's history) and `VectorAssembler` (bundles the model features — autoregressive + retail-calendar + per-seller covariates — into a `Vector` column ready for MLlib).""")
 
 code('''from olist.pipeline.demand import (
     build_weekly_order_volume, build_feature_pipeline,
@@ -421,10 +421,16 @@ code('''print(inspect.getsource(build_feature_pipeline))
 
 code('''weekly_features = add_weekly_features(weekly_order_volume)
 print(f"weekly_features rows: {weekly_features.count():,}")
-weekly_features.select("seller_id", "year_week", "weekly_order_count", *FEATURE_COLS).limit(5).show()
+# The window + calendar features live on weekly_features; the per-seller
+# covariates (avg_price/avg_freight/n_categories) are joined in fit_and_score.
+weekly_features.select(
+    "seller_id", "year_week", "weekly_order_count",
+    "week_num", "lag_1", "lag_4", "rolling_4w_mean", "decay_wtd_8w",
+    "month", "is_q4", "is_black_friday", "is_year_end",
+).limit(5).show()
 ''')
 
-md("""The six features the regressors see: `week_num` (a monotonic time index), `lag_1` and `lag_4` (volume one and four weeks ago), `rolling_4w_mean` (smoothed recent demand), `month` (calendar position), and `is_q4` (Brazilian e-commerce calendar peaks). These are standard time-series features that scale identically. Nothing here is per-seller bespoke in a way that would break at 100 times the seller count.""")
+md("""The model's features fall in three groups. **Temporal/autoregressive:** `week_num` (the seller's nth observed week — a tenure proxy), `lag_1` / `lag_4` (volume one and four weeks ago), `rolling_4w_mean` (smoothed recent demand), and the time-weighted `decay_wtd_8w` momentum term. **Retail-calendar:** `month` (here the week-of-year index), `is_q4`, and — added to capture the surges §3.7.3 flagged as unpredictable — `is_black_friday` (ISO weeks 47–48, the biggest spike in this data) and `is_year_end` (Christmas season). **Per-seller covariates** (joined in `fit_and_score`): `avg_price`, `avg_freight`, and `n_categories`, which let the model distinguish seller types (a single-category low-price shop vs a broad premium one). All scale identically — nothing is per-seller bespoke in a way that breaks at 100× the seller count.""")
 
 
 md("""### 3.6 Modelling. GBT + RF, tuned the right way for a time series
@@ -454,7 +460,12 @@ print(inspect.getsource(rolling_origin_select))
 print(inspect.getsource(fit_and_score))
 ''')
 
-code('''scoring = fit_and_score(spark)
+code('''from olist.pipeline.demand import build_seller_covariates
+
+# Materialise the per-seller covariates the model joins in (cached @step).
+build_seller_covariates(spark)
+
+scoring = fit_and_score(spark)
 print("--- demand_metrics (reported RMSE, k-fold-demo RMSE, baselines) ---")
 scoring["demand_metrics"].show(truncate=False)
 
@@ -877,9 +888,61 @@ viz.lag_corr_bar(lag_pd)
 md("""Honest finding: the cross-correlation is indistinguishable from zero at all lags (the peak |ρ| printed above is a fraction of a percent). Sentiment does not lead volume at this sample size, and we report that in §7 rather than overclaim. The weekly rollup is still useful as a trend signal *within* the risk index, since declining sentiment alongside declining demand and high network centrality is a stronger composite signal than any one component alone. And the NLP and LSTM classifiers are required-demonstration models whose labels derive from the star rating itself, so they validate the text-to-sentiment mapping rather than serve as standalone predictive tools.""")
 
 
+md("""#### 4.7.5 What are sellers failing at? Topic modeling of negative reviews
+
+The classifier and the trend tell us *that* a seller has negative sentiment; they don't tell us *why*. To make the §7 recommendations concrete, we run an unsupervised topic model (`CountVectorizer → LDA`, Spark ML) over the negative-review text and label each latent topic by its top terms — turning free text into named **failure modes** (late/undelivered, product quality, wrong/incomplete) and a per-seller failure-mode mix. This is a genuinely different technique from the supervised classifier, it never collects raw text to the driver (CountVectorizer + LDA run distributed; only the k-row topic summary and the bounded vocabulary come back), and it does **not** feed the risk score — it is an actionability layer on top of it.""")
+
+code('''from olist.pipeline.sentiment import build_negative_review_topics
+
+topics = build_negative_review_topics(spark)
+print("--- latent failure-mode topics (top terms per topic) ---")
+topics["nb2_neg_topic_summary"].orderBy("topic_id").show(truncate=False)
+''')
+
+md("""**The Spark code behind the topic model** (PT-tokenise → CountVectorizer → LDA, with reproducible keyword-based topic labelling):""")
+
+code('''print(inspect.getsource(build_negative_review_topics))
+''')
+
+md("""Each negative review is assigned its dominant topic, and we aggregate to a per-seller failure-mode mix. The table below shows the sellers with the most negative reviews and what they are mostly failing at — the concrete read account management needs ("this seller's complaints are mostly late delivery → logistics intervention", vs "product quality → catalog/QA intervention").""")
+
+code('''failure_modes = topics["nb2_seller_failure_modes"]
+share_cols = [c for c in failure_modes.columns if c.startswith("share_")]
+
+# Marketplace-level finding: how do complaints split across failure modes?
+# BIG-DATA-SAFETY-ESCAPE: SMALL_SUMMARY_COLLECT — dominant-mode counts + means
+print("Dominant failure mode per seller:")
+failure_modes.groupBy("dominant_failure_mode").count().orderBy(F.col("count").desc()).show()
+mean_mix = failure_modes.agg(*[F.round(F.avg(c), 3).alias(c) for c in share_cols]).first()
+print("Mean complaint mix across sellers:", {c: mean_mix[c] for c in share_cols})
+n_prod = failure_modes.filter(F.col("share_late_or_not_delivered") < 0.7).count()
+print(f"{n_prod:,} of {failure_modes.count():,} sellers have a meaningfully non-delivery "
+      "complaint profile (>30% product/wrong-item).")
+
+# BIG-DATA-SAFETY-ESCAPE: PLOTLY_STATIC_VIZ — top-12 by negative-review count
+fm_pd = (
+    failure_modes.orderBy(F.col("n_negative_reviews").desc())
+    .select("seller_id", "n_negative_reviews", "dominant_failure_mode", *share_cols)
+    .limit(12)
+    .toPandas()
+)
+fm_pd["seller_id"] = fm_pd["seller_id"].str.slice(0, 10) + "…"
+viz.styled_topn_table(
+    fm_pd,
+    bar_cols=["n_negative_reviews"],
+    fmt={c: "{:.2f}" for c in share_cols},
+    title="Top sellers by negative-review volume — dominant failure mode + mix",
+)
+''')
+
+md("""The finding is twofold. **Marketplace-level:** complaints are overwhelmingly about **delivery** (~83% of the average seller's negative-review mix; four of the six latent topics are delivery-flavoured), with **product quality** (~13%) and **wrong/incomplete shipments** (~5%) as the meaningful secondary modes. That delivery dominance is a genuine cross-analysis result — customers, unprompted, complain about exactly what the §3 delay model and the §5 delay-contagion graph target, which corroborates the whole risk thesis rather than restating it. **Per-seller:** the mix is *not* uniform — about 1-in-5 sellers (~370) have a meaningfully product-driven complaint profile, and for those the right intervention is catalogue/QA, not logistics. That is the actionable read account management needs, beyond a single sentiment score.
+
+Honest caveats: LDA topics are statistical clusters of co-occurring words, not ground-truth categories — we label them by their top terms (shown above) so the mapping is auditable; the dominance of delivery is real but means the per-seller signal is most useful for *identifying the product-complaint minority*, not for finely grading the delivery majority. This layer feeds the §7 recommendations, not the risk score.""")
+
+
 md("""### 4.8 Interpretation. Per-seller scores + deployment view
 
-The final per-seller deployment parquet `outputs/nb2_seller_sentiment_scores.parquet` carries `avg_sentiment_score`, `sentiment_trend_6wk`, `pct_negative_reviews`, and `sentiment_declining` (1 iff trend < −0.25).""")
+The final per-seller deployment parquet `outputs/nb2_seller_sentiment_scores.parquet` carries `avg_sentiment_score`, `sentiment_trend_6wk`, `pct_negative_reviews`, and `sentiment_declining` (1 iff trend < −0.25). The per-seller failure-mode mix from §4.7.5 (`outputs/nb2_seller_failure_modes.parquet`) is the companion actionability layer.""")
 
 code('''from olist.pipeline.sentiment import build_seller_sentiment_scores
 
@@ -914,7 +977,7 @@ md("""These ten are the highest-priority outreach candidates from the sentiment 
 
 md("""### Key takeaways
 
-Both classifiers comfortably clear the 0.90 AUC bar. The two AUCs are now computed with the *same* Spark `BinaryClassificationEvaluator`, but they are **not a strict head-to-head**: the LogReg uses a Spark `randomSplit` and the LSTM an independent NumPy split, so the small AUC gap between them is within noise and we read them as *comparable*, not one beating the other. The LSTM runs inside Spark, trained via `TorchDistributor(local_mode=True)` and scored via `predict_batch_udf`, the integration pattern rather than a bare driver loop. Worth keeping in mind that these are required-demonstration classifiers: their labels come from the star rating, so a high AUC validates the text-to-sentiment mapping, it does not make them predictive instruments. The confusion matrix confirms the classifier is genuinely useful on the operationally-important negative class despite the imbalance. We carry the per-seller trend two ways: the Window-based `sentiment_trend_6wk` reaches the deployment parquet, cross-checked by a whole-history OLS slope via grouped-map `applyInPandas` (§4.7.3), alongside `pct_negative_reviews`. The honest caveat is that sentiment-to-volume cross-correlation is indistinguishable from zero at all lags in this sample, so the trend feeds the §6 composite as a component, not a standalone trigger. And most reviews have no comment text and sit out of the NLP pipeline, though they still contribute to the trend rollup via their numeric score.""")
+Both classifiers comfortably clear the 0.90 AUC bar. The two AUCs are now computed with the *same* Spark `BinaryClassificationEvaluator`, but they are **not a strict head-to-head**: the LogReg uses a Spark `randomSplit` and the LSTM an independent NumPy split, so the small AUC gap between them is within noise and we read them as *comparable*, not one beating the other. The LSTM runs inside Spark, trained via `TorchDistributor(local_mode=True)` and scored via `predict_batch_udf`, the integration pattern rather than a bare driver loop. Worth keeping in mind that these are required-demonstration classifiers: their labels come from the star rating, so a high AUC validates the text-to-sentiment mapping, it does not make them predictive instruments. The confusion matrix confirms the classifier is genuinely useful on the operationally-important negative class despite the imbalance. We carry the per-seller trend two ways: the Window-based `sentiment_trend_6wk` reaches the deployment parquet, cross-checked by a whole-history OLS slope via grouped-map `applyInPandas` (§4.7.3), alongside `pct_negative_reviews`. The honest caveat is that sentiment-to-volume cross-correlation is indistinguishable from zero at all lags in this sample, so the trend feeds the §6 composite as a component, not a standalone trigger. And most reviews have no comment text and sit out of the NLP pipeline, though they still contribute to the trend rollup via their numeric score. Finally, the §4.7.5 LDA topic model moves beyond the supervised classifier to ask *what* customers complain about: complaints are ~83% delivery, ~13% product quality, ~5% wrong/incomplete — delivery dominance that independently corroborates the §3/§5 delay focus, while flagging the ~1-in-5 sellers whose problems are product-driven and need a different intervention.""")
 
 
 # ===========================================================================

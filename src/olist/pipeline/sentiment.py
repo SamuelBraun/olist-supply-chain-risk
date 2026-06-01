@@ -25,8 +25,17 @@ from pathlib import Path
 
 from pyspark.ml import Pipeline
 from pyspark.ml.classification import LogisticRegression
+from pyspark.ml.clustering import LDA
 from pyspark.ml.evaluation import BinaryClassificationEvaluator
-from pyspark.ml.feature import HashingTF, IDF, StopWordsRemover, Tokenizer
+from pyspark.ml.feature import (
+    CountVectorizer,
+    HashingTF,
+    IDF,
+    RegexTokenizer,
+    StopWordsRemover,
+    Tokenizer,
+)
+from pyspark.ml.functions import vector_to_array
 from pyspark.ml.tuning import CrossValidator, ParamGridBuilder
 from pyspark.sql import DataFrame, SparkSession
 from pyspark.sql import functions as F
@@ -65,6 +74,45 @@ LSTM_EPOCHS = 3
 LSTM_BATCH_SIZE = 128
 LSTM_SEED = 1394
 NLP_SPLIT_SEED = 5067
+LDA_SEED = 6273  # non-tutorial seed for the negative-review topic model
+
+#: Number of latent failure-mode topics. k=6 keeps the product-quality cluster
+#: distinct from the (dominant) delivery topics; fewer collapses everything to
+#: delivery, which the data over-represents.
+NEG_TOPICS_K = 6
+
+#: Domain-generic Portuguese terms that dominate review text without
+#: discriminating a failure mode (product, bought, came, is, ...). Removed on top
+#: of the standard PT stopword list so LDA topics key on the *problem* words
+#: (delivery / quality / wrong-item) rather than ubiquitous filler. Words like
+#: `entrega`/`recebi`/`atraso` are deliberately NOT here — they are the signal.
+DOMAIN_STOPWORDS_PT = {
+    "produto", "produtos", "comprei", "compra", "veio", "vir", "é", "pra",
+    "achei", "fica", "ficou", "vez", "ser", "fazer", "agora", "aqui", "vou",
+    "todo", "toda", "coisa", "vendedor", "loja", "item", "pedido",
+}
+
+#: Keyword sets (Portuguese, lowercased) used to label each LDA topic by its top
+#: terms — a reproducible mapping from unstable topic indices to human failure
+#: modes (cf. the KMeans-archetype argmax labelling in convergence). A topic is
+#: assigned the failure mode whose keyword set its top terms overlap most; ties
+#: and no-overlap fall back to "other". The notebook prints each topic's top
+#: terms so the mapping is auditable, not a black box.
+PT_FAILURE_KEYWORDS = {
+    "late_or_not_delivered": {
+        "entrega", "entregue", "atraso", "atrasado", "prazo", "demora", "demorou",
+        "chegou", "recebi", "recebido", "dias", "correio", "transportadora",
+        "aguardando", "enviado",
+    },
+    "product_quality": {
+        "produto", "qualidade", "quebrado", "defeito", "ruim", "péssimo", "pessima",
+        "danificado", "estragado", "funciona", "qualidade", "horrível",
+    },
+    "wrong_or_incomplete": {
+        "errado", "diferente", "veio", "faltando", "outro", "outra", "nota",
+        "cancelado", "devolução", "devolver", "troca", "incompleto",
+    },
+}
 
 # Fast-iteration mode for CI / dev reruns. When OLIST_LIGHT=1 the heavy CV grid
 # and LSTM epoch count shrink; the full grid/epochs run otherwise (nightly heavy
@@ -244,6 +292,148 @@ def fit_nlp_pipeline(labelled: DataFrame) -> dict:
         "test_df": test_df,
         "test_preds": preds,
         "text_labelled": text_labelled,
+    }
+
+
+# ---------------------------------------------------------------------------
+# Negative-review topic model — what are sellers actually failing at?
+# (Unsupervised NLP; raises the sentiment analysis beyond a 1-D star-rating
+# classifier into actionable failure modes. Does NOT feed the risk score.)
+# ---------------------------------------------------------------------------
+
+
+def _label_topics_from_terms(
+    topic_terms: list[tuple[int, list[str]]]
+) -> dict[int, str]:
+    """Map each LDA topic index to a human failure mode by overlap of its top
+    terms with PT_FAILURE_KEYWORDS. Reproducible regardless of topic order (cf.
+    the KMeans-archetype argmax labelling); falls back to "other" on no overlap.
+    """
+    labels: dict[int, str] = {}
+    for topic_id, terms in topic_terms:
+        term_set = set(terms)
+        best_label, best_overlap = "other", 0
+        for label, keywords in PT_FAILURE_KEYWORDS.items():
+            overlap = len(term_set & keywords)
+            if overlap > best_overlap:
+                best_label, best_overlap = label, overlap
+        labels[topic_id] = best_label
+    return labels
+
+
+@step(
+    name="sentiment.negative_review_topics",
+    inputs=[
+        "data/olist_order_reviews_dataset.csv",
+        "data/olist_orders_dataset.csv",
+        "data/olist_order_items_dataset.csv",
+        "data/olist_sellers_dataset.csv",
+    ],
+    outputs=[
+        "outputs/_cache/nb2_neg_topic_summary.parquet",
+        "outputs/nb2_seller_failure_modes.parquet",
+    ],
+    code_deps=_SENT_CODE_DEPS,
+    version=3,
+)
+def build_negative_review_topics(spark: SparkSession) -> dict[str, DataFrame]:
+    """Unsupervised topic model (Spark ML LDA) over NEGATIVE review text, to
+    surface *what* sellers are failing at — a layer the star-rating classifier
+    cannot give. Pipeline: lowercased text → Tokenizer → StopWordsRemover[pt] →
+    `CountVectorizer` → `LDA(k=NEG_TOPICS_K)`. Each topic is labelled by its top
+    terms (`PT_FAILURE_KEYWORDS`), each review assigned its dominant topic, and
+    per-seller failure-mode shares aggregated.
+
+    Distributable: CountVectorizer + LDA run on the cluster; only the k-row topic
+    summary and the bounded vocabulary reach the driver. Does NOT feed the risk
+    score — it is an analysis/insight layer that makes the §7 recommendations
+    concrete ("this seller's complaints are mostly late delivery").
+
+    Outputs:
+    * `nb2_neg_topic_summary`: (topic_id, failure_mode, top_terms) — k rows.
+    * `nb2_seller_failure_modes`: (seller_id, n_negative_reviews,
+      share_<mode>…, dominant_failure_mode) per seller with negative reviews.
+    """
+    reviews = build_reviews_with_seller(spark)
+    labelled = label_reviews(reviews)
+    neg = (
+        labelled.filter(
+            (F.col("label") == 0) & F.col("review_comment_message").isNotNull()
+        )
+        .withColumn("text", F.lower(F.col("review_comment_message")))
+        .select("review_id", "seller_id", "text")
+    )
+    # RegexTokenizer (word tokens) strips punctuation so "qualidade," and
+    # "qualidade." collapse; standard PT stopwords + domain-generic filler are
+    # removed so topics key on the *problem* words, not ubiquitous noise.
+    stopwords = list(
+        set(StopWordsRemover.loadDefaultStopWords("portuguese")) | DOMAIN_STOPWORDS_PT
+    )
+    tokenizer = RegexTokenizer(
+        inputCol="text", outputCol="tokens", pattern=r"\W+", minTokenLength=3
+    )
+    stop_remover = StopWordsRemover(
+        inputCol="tokens", outputCol="tokens_clean", stopWords=stopwords
+    )
+    tokenised = stop_remover.transform(tokenizer.transform(neg)).filter(
+        F.size("tokens_clean") > 0
+    )
+    # maxDF=0.9 drops only near-universal terms; minDF=5 drops rare typos. (An
+    # aggressive maxDF=0.5 also dropped the discriminating quality words, so the
+    # domain-stopword list — not maxDF — does the heavy de-noising here.)
+    cv = CountVectorizer(
+        inputCol="tokens_clean", outputCol="tf",
+        vocabSize=2000, minDF=5.0, maxDF=0.9,
+    )
+    cv_model = cv.fit(tokenised)
+    vectorised = cv_model.transform(tokenised)
+    lda = LDA(
+        k=NEG_TOPICS_K, maxIter=20, seed=LDA_SEED,
+        featuresCol="tf", topicDistributionCol="topicDist",
+    )
+    lda_model = lda.fit(vectorised)
+
+    # Topic → top terms (driver-side: k rows + ≤2000-term vocab).
+    vocab = cv_model.vocabulary
+    # BIG-DATA-SAFETY-ESCAPE: SMALL_SUMMARY_COLLECT — k topic rows for labelling
+    described = lda_model.describeTopics(maxTermsPerTopic=12).collect()
+    topic_terms = [
+        (int(r["topic"]), [vocab[i] for i in r["termIndices"]]) for r in described
+    ]
+    topic_labels = _label_topics_from_terms(topic_terms)
+    topic_summary = spark.createDataFrame(
+        [(tid, topic_labels[tid], ", ".join(terms[:8])) for tid, terms in topic_terms],
+        "topic_id int, failure_mode string, top_terms string",
+    )
+
+    # Assign each review its dominant topic, map to label, aggregate per seller.
+    label_map = F.create_map(
+        *[x for tid, lbl in topic_labels.items() for x in (F.lit(tid), F.lit(lbl))]
+    )
+    scored = (
+        lda_model.transform(vectorised)
+        .withColumn("_td", vector_to_array("topicDist"))
+        .withColumn("topic_id", F.expr("array_position(_td, array_max(_td)) - 1"))
+        .withColumn("failure_mode", label_map[F.col("topic_id")])
+    )
+    modes = list(PT_FAILURE_KEYWORDS.keys()) + ["other"]
+    share_aggs = [
+        F.avg(F.when(F.col("failure_mode") == m, 1.0).otherwise(0.0)).alias(f"share_{m}")
+        for m in modes
+    ]
+    per_seller = scored.groupBy("seller_id").agg(
+        F.count("*").alias("n_negative_reviews"), *share_aggs
+    )
+    share_cols = [f"share_{m}" for m in modes]
+    per_seller = per_seller.withColumn("_max", F.greatest(*[F.col(c) for c in share_cols]))
+    dominant = F.lit("other")
+    for col_name, mode in zip(share_cols, modes):
+        dominant = F.when(F.col(col_name) == F.col("_max"), F.lit(mode)).otherwise(dominant)
+    per_seller = per_seller.withColumn("dominant_failure_mode", dominant).drop("_max")
+
+    return {
+        "nb2_neg_topic_summary": topic_summary,
+        "nb2_seller_failure_modes": per_seller,
     }
 
 

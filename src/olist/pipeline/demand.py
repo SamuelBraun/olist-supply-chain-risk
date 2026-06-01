@@ -51,6 +51,13 @@ FEATURE_COLS = [
     "decay_wtd_8w",
     "month",
     "is_q4",
+    # Retail-calendar spikes (WS9)
+    "is_black_friday",
+    "is_year_end",
+    # Per-seller static covariates (WS9)
+    "avg_price",
+    "avg_freight",
+    "n_categories",
 ]
 LAG_IMPUTE_COLS = ["lag_1", "lag_4", "rolling_4w_mean", "decay_wtd_8w"]
 
@@ -431,6 +438,14 @@ def add_weekly_features(weekly_order_volume: DataFrame) -> DataFrame:
         )
         .withColumn("month", F.substring("year_week", 6, 2).cast("int"))
         .withColumn("is_q4", (F.col("month") >= 10).cast("int"))
+        # Brazilian retail-calendar spikes (week-of-year). Black Friday lands in
+        # ISO weeks 47–48 (late Nov) — the single biggest spike in this dataset;
+        # year-end (weeks >=49) is the Christmas season. These binary flags let
+        # the trees isolate the demand surges §3.7.3 flagged as unpredictable.
+        .withColumn(
+            "is_black_friday", F.col("month").isin(47, 48).cast("int")
+        )
+        .withColumn("is_year_end", (F.col("month") >= 49).cast("int"))
     )
     return with_global_week_index(base)
 
@@ -673,10 +688,38 @@ def rolling_origin_select(
 
 
 @step(
+    name="demand.seller_covariates",
+    inputs=["outputs/_cache/demand_order_lines.parquet"],
+    outputs=["outputs/_cache/demand_seller_covariates.parquet"],
+    code_deps=_DEMAND_CODE_DEPS,
+    version=1,
+)
+def build_seller_covariates(spark: SparkSession) -> DataFrame:
+    """Per-seller static covariates that contextualise the weekly forecast:
+    average item price and freight (price tier / shipping profile) and the number
+    of distinct product categories the seller sells (breadth). These are stable
+    seller attributes joined into the demand feature base so the model can
+    distinguish, e.g., a single-category low-price seller from a broad premium
+    one. Plain group-by aggregations — fully distributable.
+
+    Columns: seller_id, avg_price, avg_freight, n_categories.
+    """
+    order_lines = spark.read.parquet(
+        resolve_path("outputs/_cache/demand_order_lines.parquet")
+    )
+    return order_lines.groupBy("seller_id").agg(
+        F.avg("price").alias("avg_price"),
+        F.avg("freight_value").alias("avg_freight"),
+        F.countDistinct("product_category_name").alias("n_categories"),
+    )
+
+
+@step(
     name="demand.fit_and_score",
     inputs=[
         "outputs/nb1_weekly_order_volume.parquet",
         "outputs/_cache/demand_order_lines.parquet",
+        "outputs/_cache/demand_seller_covariates.parquet",
         "data/olist_sellers_dataset.csv",
     ],
     outputs=[
@@ -686,7 +729,7 @@ def rolling_origin_select(
         "outputs/nb1_seller_demand_scores.parquet",
     ],
     code_deps=_DEMAND_CODE_DEPS,
-    version=4,
+    version=5,
 )
 def fit_and_score(spark: SparkSession) -> dict[str, DataFrame]:
     """Fit GBT + RF, select hyperparameters with forward-chaining (rolling-origin)
@@ -717,20 +760,33 @@ def fit_and_score(spark: SparkSession) -> dict[str, DataFrame]:
     order_lines = spark.read.parquet(resolve_path("outputs/_cache/demand_order_lines.parquet"))
     sellers = load_sellers(spark)
 
+    seller_covariates = spark.read.parquet(
+        resolve_path("outputs/_cache/demand_seller_covariates.parquet")
+    )
     weekly_features = add_weekly_features(weekly)  # un-imputed base + global_week_idx
-    model_base = weekly_features.filter(
-        F.col("lag_1").isNotNull()
-        & F.col("lag_4").isNotNull()
-        & F.col("rolling_4w_mean").isNotNull()
-    ).select(
-        "seller_id",
-        "year_week",
-        "week_num",
-        "global_week_idx",
-        *LAG_IMPUTE_COLS,
-        "month",
-        "is_q4",
-        F.col("weekly_order_count").cast("double").alias("label"),
+    model_base = (
+        weekly_features.filter(
+            F.col("lag_1").isNotNull()
+            & F.col("lag_4").isNotNull()
+            & F.col("rolling_4w_mean").isNotNull()
+        )
+        .join(broadcast(seller_covariates), "seller_id", "left")
+        .fillna({"avg_price": 0.0, "avg_freight": 0.0, "n_categories": 0})
+        .select(
+            "seller_id",
+            "year_week",
+            "week_num",
+            "global_week_idx",
+            *LAG_IMPUTE_COLS,
+            "month",
+            "is_q4",
+            "is_black_friday",
+            "is_year_end",
+            "avg_price",
+            "avg_freight",
+            "n_categories",
+            F.col("weekly_order_count").cast("double").alias("label"),
+        )
     )
 
     # Calendar-time split + train-only imputer/assembler fit (no leakage).

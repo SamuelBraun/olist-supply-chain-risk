@@ -322,6 +322,42 @@ def check_catregion_graph() -> CheckResult:
     )
 
 
+def check_negative_topic_model() -> CheckResult:
+    """Unsupervised NLP beyond the supervised classifier: an LDA topic model over
+    negative reviews (`CountVectorizer → LDA`) labelled into failure modes, with a
+    per-seller failure-mode mix output.
+    """
+    src = _src(sentiment)
+    ok = (
+        "def build_negative_review_topics" in src
+        and "LDA(" in src
+        and "CountVectorizer(" in src
+        and "dominant_failure_mode" in src
+    )
+    return CheckResult(
+        "Negative-review topic model (LDA failure modes)",
+        ok,
+        f"LDA={'LDA(' in src}, CountVectorizer={'CountVectorizer(' in src}, "
+        f"failure_modes={'dominant_failure_mode' in src}",
+    )
+
+
+def check_demand_feature_richness() -> CheckResult:
+    """Beyond lag/rolling: retail-calendar flags (Black Friday / year-end) and
+    per-seller covariates (price, freight, category breadth) in the demand model.
+    """
+    src = _src(demand)
+    has_calendar = "is_black_friday" in src and "is_year_end" in src
+    has_covariates = "def build_seller_covariates" in src and "n_categories" in src
+    in_features = '"avg_price"' in src and '"is_black_friday"' in src
+    ok = has_calendar and has_covariates and in_features
+    return CheckResult(
+        "Demand feature richness (retail calendar + seller covariates)",
+        ok,
+        f"calendar={has_calendar}, covariates={has_covariates}, in_FEATURE_COLS={in_features}",
+    )
+
+
 def check_spark_dl_integration() -> CheckResult:
     src = _src(sentiment)
     has_distributor = "TorchDistributor" in src
@@ -512,6 +548,8 @@ CHECKS: tuple[Callable[[], CheckResult], ...] = (
     check_cocustomer_graph,
     check_two_hop_substitutes,
     check_catregion_graph,
+    check_negative_topic_model,
+    check_demand_feature_richness,
     check_spark_dl_integration,
     check_applyinpandas,
     check_streaming,

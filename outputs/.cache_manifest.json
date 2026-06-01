@@ -1,31 +1,31 @@
 {
   "entries": {
     "convergence.kmeans_elbow": {
-      "fingerprint": "d89422f0bfb453607ab16b5dfb6df6340e8713f8fce2af0a64775acb07fc8091",
+      "fingerprint": "0acf3d05ff60c9be9221028ac69f9eb1c94f74b3267f67b4b3776d2f3bb0016a",
       "outputs": [
         "outputs/nb6_kmeans_elbow.parquet"
       ],
       "version": 1,
-      "written_at": "2026-06-01T22:48:12"
+      "written_at": "2026-06-02T00:33:58"
     },
     "convergence.seller_risk_index": {
-      "fingerprint": "b456b463030dadafc8fd105b5e0bc42a7b938914be74c495684a47125ae7d444",
+      "fingerprint": "3ef0633b9e334824d865a740cd0042e6d48f6a41596d7cd6108b3d0a56fc3458",
       "outputs": [
         "outputs/seller_risk_index.parquet"
       ],
       "version": 5,
-      "written_at": "2026-06-01T22:48:06"
+      "written_at": "2026-06-02T00:33:53"
     },
     "demand.fit_and_score": {
-      "fingerprint": "ec75432586f8db0c6d85af1f483c12bea328d344d2396a321661b41cbd15f16b",
+      "fingerprint": "041cc264012d49fd53a3d2560ad986d31436f6c20da20061f11b1e1c66baa309",
       "outputs": [
         "outputs/_cache/demand_predictions.parquet",
         "outputs/_cache/demand_metrics.parquet",
         "outputs/_cache/demand_feature_importances.parquet",
         "outputs/nb1_seller_demand_scores.parquet"
       ],
-      "version": 4,
-      "written_at": "2026-06-01T21:26:25"
+      "version": 5,
+      "written_at": "2026-06-02T00:03:22"
     },
     "demand.geo_centroids": {
       "fingerprint": "045373662ab66707fde1733be0df0ecc2d6274636677f840dbc3c8bebbe104c8",
@@ -36,37 +36,45 @@
       "written_at": "2026-04-24T22:24:08"
     },
     "demand.order_lines": {
-      "fingerprint": "b16511dd77a58fc2bc72d6d6f149bd52648dc94f0d0523768bc7d0139de5d904",
+      "fingerprint": "1789d423450f4e1dffb3db6e098f0ad6942ddf8d445e771613736650002b7702",
       "outputs": [
         "outputs/_cache/demand_order_lines.parquet"
       ],
       "version": 1,
-      "written_at": "2026-06-01T20:50:33"
+      "written_at": "2026-06-01T23:24:42"
     },
     "demand.regional_forecast": {
-      "fingerprint": "c151767a74857d35dec876568b6d91670692ad597261e072e1028867aea7d4a3",
+      "fingerprint": "9905072da2de01ff90e6bf0a7f301651a20a3b68fcef75a5ce8f47eec0243cd8",
       "outputs": [
         "outputs/nb1_regional_demand_forecast.parquet",
         "outputs/_cache/demand_regional_metrics.parquet"
       ],
       "version": 1,
-      "written_at": "2026-06-01T21:43:07"
+      "written_at": "2026-06-02T00:21:03"
     },
     "demand.regional_weekly_volume": {
-      "fingerprint": "18be13f2dae009991d8a1621f9b3344306e34f0a0673ffcbc112bfbd7604e606",
+      "fingerprint": "52f7d313dbdbfd4647618d8b5ab0e58ebbabb0d7a96dc3c88c87fcc66ab51a2a",
       "outputs": [
         "outputs/_cache/demand_regional_weekly_volume.parquet"
       ],
       "version": 1,
-      "written_at": "2026-06-01T21:26:32"
+      "written_at": "2026-06-02T00:03:28"
+    },
+    "demand.seller_covariates": {
+      "fingerprint": "52f7d313dbdbfd4647618d8b5ab0e58ebbabb0d7a96dc3c88c87fcc66ab51a2a",
+      "outputs": [
+        "outputs/_cache/demand_seller_covariates.parquet"
+      ],
+      "version": 1,
+      "written_at": "2026-06-01T23:24:50"
     },
     "demand.weekly_order_volume": {
-      "fingerprint": "18be13f2dae009991d8a1621f9b3344306e34f0a0673ffcbc112bfbd7604e606",
+      "fingerprint": "52f7d313dbdbfd4647618d8b5ab0e58ebbabb0d7a96dc3c88c87fcc66ab51a2a",
       "outputs": [
         "outputs/nb1_weekly_order_volume.parquet"
       ],
       "version": 1,
-      "written_at": "2026-06-01T20:50:40"
+      "written_at": "2026-06-01T23:24:49"
     },
     "network.backup_map": {
       "fingerprint": "85b2b8380bb736cb5a11b226d17aec8f06b67044010c5673f8b449be79647783",
@@ -221,36 +229,45 @@
       "written_at": "2026-06-01T22:42:01"
     },
     "sentiment.lead_indicator_lags": {
-      "fingerprint": "a2bc716f138df36c3e618659afae68f9074c62414275e8af50d7cf1ab934d769",
+      "fingerprint": "49021bb916e224fa24309e299dcdd98276ff4b726befe186af26e70675fa2cae",
       "outputs": [
         "outputs/_cache/sentiment_lead_lags.parquet"
       ],
       "version": 1,
-      "written_at": "2026-06-01T21:44:58"
+      "written_at": "2026-06-02T00:33:31"
     },
     "sentiment.lstm_metrics": {
-      "fingerprint": "dd437071d87f74c5c356c4993edfee7e6739c3fbfdf505f53d027d495ea46a62",
+      "fingerprint": "9841eabb23bcb81f2bb6c046b65867616d2ec3da2275ebc4c294bf10ad58acfe",
       "outputs": [
         "outputs/_cache/sentiment_lstm_metrics.parquet"
       ],
       "version": 2,
-      "written_at": "2026-06-01T21:44:40"
+      "written_at": "2026-06-02T00:33:14"
+    },
+    "sentiment.negative_review_topics": {
+      "fingerprint": "34ec0b7c41edae8d9ee0619562df918f917f07b6a235cb936556c47b573acf73",
+      "outputs": [
+        "outputs/_cache/nb2_neg_topic_summary.parquet",
+        "outputs/nb2_seller_failure_modes.parquet"
+      ],
+      "version": 3,
+      "written_at": "2026-06-02T00:33:37"
     },
     "sentiment.reviews_with_seller": {
-      "fingerprint": "1250e043e546bb24e823d167dce50e2c64eebc9f872facac16754829ef275da2",
+      "fingerprint": "cb396572fb4e55bda8e6312ca34242f4028e396deeb648179317eaeeb49f1e96",
       "outputs": [
         "outputs/_cache/sentiment_reviews_with_seller.parquet"
       ],
       "version": 1,
-      "written_at": "2026-06-01T21:43:12"
+      "written_at": "2026-06-02T00:31:50"
     },
     "sentiment.seller_scores": {
-      "fingerprint": "85f37e231b9ac2e90e3d03b0a0757ff15ad8aa420ec6d536c21a32f89d9278bd",
+      "fingerprint": "8766c22ef67f2188f205a55e4c8ae59a3f57d688cb49cf08f38982db2164aa02",
       "outputs": [
         "outputs/nb2_seller_sentiment_scores.parquet"
       ],
       "version": 1,
-      "written_at": "2026-06-01T21:45:01"
+      "written_at": "2026-06-02T00:33:38"
     }
   },
   "version": 1
