@@ -22,10 +22,6 @@ TOP50_VIZ = "TOP50_VIZ"
 #: to pandas for the state-bar chart.
 STATE_AGG_VIZ = "STATE_AGG_VIZ"
 
-#: Single-row aggregates (min/max/mean collected as Python scalars) used to
-#: normalise per-seller demand/sentiment/network scores before weighting.
-RISK_NORM_AGG = "RISK_NORM_AGG"
-
 #: LSTM training-set DataFrame (text + binary label) pulled to pandas so
 #: PyTorch can iterate over it via a DataLoader.
 LSTM_TO_PANDAS = "LSTM_TO_PANDAS"
@@ -64,7 +60,6 @@ SMALL_SUMMARY_COLLECT = "SMALL_SUMMARY_COLLECT"
 ALL_ESCAPES: tuple[str, ...] = (
     TOP50_VIZ,
     STATE_AGG_VIZ,
-    RISK_NORM_AGG,
     LSTM_TO_PANDAS,
     LSTM_PYTORCH,
     TOP10_PAGERANK_DRIVER,

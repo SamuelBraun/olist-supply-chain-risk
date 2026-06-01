@@ -442,9 +442,12 @@ def with_global_week_index(df: DataFrame, week_col: str = "year_week") -> DataFr
     across all sellers/states, which is what makes a calendar-time split
     unbiased w.r.t. series length.
     """
+    # The single-partition sort below is over a tiny bounded frame (the distinct
+    # weeks, ~100 rows), then broadcast-joined back — safe at any data scale.
     distinct_weeks = (
         df.select(week_col).distinct().withColumn(
             "global_week_idx",
+            # SCALABLE-WINDOW: ranks the DISTINCT week set (~100 rows), not the full data
             F.dense_rank().over(Window.orderBy(week_col)) - 1,
         )
     )
@@ -599,7 +602,74 @@ def build_cv_estimators(
         seed=RF_SEED,
         parallelism=2,
     )
-    return {"gbt_cv": gbt_cv, "rf_cv": rf_cv, "gbt": gbt, "rf": rf}
+    return {
+        "gbt_cv": gbt_cv,
+        "rf_cv": rf_cv,
+        "gbt": gbt,
+        "rf": rf,
+        "gbt_grid": gbt_grid,
+        "rf_grid": rf_grid,
+    }
+
+
+RO_SPLITS = 2 if LIGHT else 3
+
+
+def rolling_origin_select(
+    train_df: DataFrame,
+    estimator,
+    param_maps: list,
+    evaluator: RegressionEvaluator,
+    week_idx_col: str = "global_week_idx",
+    n_splits: int = RO_SPLITS,
+):
+    """Forward-chaining (rolling-origin) hyperparameter selection for time series.
+
+    Random k-fold CV assumes rows are exchangeable; weekly demand is not — a fold
+    can train on future weeks and validate on past ones, leaking look-ahead into
+    *model selection*. This expands the training window through calendar time
+    instead: split the TRAIN weeks into `n_splits`+1 contiguous blocks by the
+    shared `global_week_idx`; for split s, fit on blocks [0..s] and validate on
+    block s+1. Each ParamMap's score is the mean validation RMSE across splits;
+    the lowest wins. No test rows are ever touched here.
+
+    Returns `(best_param_map, best_mean_rmse, per_combo)` where `per_combo` is a
+    list of `(combo_index, mean_val_rmse)` for notebook display.
+    """
+    # BIG-DATA-SAFETY-ESCAPE: SMALL_SUMMARY_COLLECT — 2-scalar week-range agg
+    bounds = train_df.agg(
+        F.min(week_idx_col).alias("lo"), F.max(week_idx_col).alias("hi")
+    ).first()
+    lo, hi = int(bounds["lo"]), int(bounds["hi"])
+    span = hi - lo
+    # n_splits+1 equal segments; the first segment is always training.
+    boundaries = [
+        lo + int(round(span * s / (n_splits + 1))) for s in range(n_splits + 2)
+    ]
+    combo_rmses: list[list[float]] = [[] for _ in param_maps]
+    for s in range(1, n_splits + 1):
+        train_hi = boundaries[s]
+        val_lo, val_hi = boundaries[s], boundaries[s + 1]
+        fold_train = train_df.filter(F.col(week_idx_col) <= train_hi)
+        fold_val = train_df.filter(
+            (F.col(week_idx_col) > val_lo) & (F.col(week_idx_col) <= val_hi)
+        )
+        if not fold_val.head(1):  # empty validation block — skip this split
+            continue
+        fold_train = fold_train.cache()
+        fold_train.count()  # materialise before fitting the grid against it
+        for combo_idx, param_map in enumerate(param_maps):
+            fold_model = estimator.fit(fold_train, param_map)
+            rmse = float(evaluator.evaluate(fold_model.transform(fold_val)))
+            combo_rmses[combo_idx].append(rmse)
+        fold_train.unpersist()
+    per_combo = [
+        (combo_idx, sum(rmses) / len(rmses))
+        for combo_idx, rmses in enumerate(combo_rmses)
+        if rmses
+    ]
+    best_idx, best_mean = min(per_combo, key=lambda pair: pair[1])
+    return param_maps[best_idx], best_mean, per_combo
 
 
 @step(
@@ -616,12 +686,18 @@ def build_cv_estimators(
         "outputs/nb1_seller_demand_scores.parquet",
     ],
     code_deps=_DEMAND_CODE_DEPS,
-    version=3,
+    version=4,
 )
 def fit_and_score(spark: SparkSession) -> dict[str, DataFrame]:
-    """Fit GBT + RF via `CrossValidator` (3-fold; 2-fold under LIGHT), pick the
-    best by held-out test RMSE, compare against three naive baselines on the
-    SAME test rows, then score every seller.
+    """Fit GBT + RF, select hyperparameters with forward-chaining (rolling-origin)
+    validation, pick the best by held-out test RMSE, compare against three naive
+    baselines on the SAME test rows, then score every seller.
+
+    `CrossValidator` (3-fold; 2-fold under LIGHT) is still fit for both models to
+    demonstrate the MLlib tuning API, but its random-fold result is NOT what
+    selects the reported model — random k-fold leaks future-into-past on a time
+    series. `rolling_origin_select` makes the reported choice; the metrics row
+    carries both so the notebook can show "k-fold picked X, time-aware picked Y."
 
     The split is a *global calendar-time* split (latest ~20% of calendar weeks
     held out across all sellers), and the Imputer/VectorAssembler are fit on the
@@ -677,13 +753,43 @@ def fit_and_score(spark: SparkSession) -> dict[str, DataFrame]:
 
     print(f"Calendar-time split at global_week_idx={int(split_idx)} "
           f"(LIGHT={LIGHT})")
-    print("Fitting GBT CV ...")
-    gbt_model = cv["gbt_cv"].fit(train_df)
-    print("Fitting RF CV ...")
-    rf_model = cv["rf_cv"].fit(train_df)
 
-    gbt_rmse = evaluator.evaluate(gbt_model.transform(test_df))
-    rf_rmse = evaluator.evaluate(rf_model.transform(test_df))
+    # --- k-fold CrossValidator: demonstrates the MLlib tuning API and serves as
+    # the "naive" comparison. Its random folds shuffle calendar order, so we do
+    # NOT let it select the reported model — see rolling_origin_select below.
+    print("Fitting GBT CV (k-fold demo) ...")
+    gbt_cv_model = cv["gbt_cv"].fit(train_df)
+    print("Fitting RF CV (k-fold demo) ...")
+    rf_cv_model = cv["rf_cv"].fit(train_df)
+    gbt_cv_rmse = float(evaluator.evaluate(gbt_cv_model.transform(test_df)))
+    rf_cv_rmse = float(evaluator.evaluate(rf_cv_model.transform(test_df)))
+
+    # --- Forward-chaining (rolling-origin) selection: the REPORTED model. Picks
+    # hyperparameters with an expanding time window so no future week informs the
+    # choice, then refits the winner on the full train split.
+    print("Rolling-origin selection (GBT) ...")
+    gbt_best_pm, gbt_ro_mean, _ = rolling_origin_select(
+        train_df, cv["gbt"], cv["gbt_grid"], evaluator
+    )
+    print("Rolling-origin selection (RF) ...")
+    rf_best_pm, rf_ro_mean, _ = rolling_origin_select(
+        train_df, cv["rf"], cv["rf_grid"], evaluator
+    )
+    gbt_model = cv["gbt"].fit(train_df, gbt_best_pm)
+    rf_model = cv["rf"].fit(train_df, rf_best_pm)
+
+    # Guard the model-vs-baseline comparison: VectorAssembler(handleInvalid=
+    # "skip") could silently drop test rows, which would put model RMSE and the
+    # naive baselines on different denominators. Assert identical row counts.
+    test_n = test_df.count()
+    gbt_scored = gbt_model.transform(test_df)
+    rf_scored = rf_model.transform(test_df)
+    assert gbt_scored.count() == test_n and rf_scored.count() == test_n, (
+        "VectorAssembler(handleInvalid='skip') dropped held-out rows — model "
+        "RMSE and naive baselines would use different denominators."
+    )
+    gbt_rmse = float(evaluator.evaluate(gbt_scored))
+    rf_rmse = float(evaluator.evaluate(rf_scored))
 
     # Naive baselines on the SAME held-out rows: persistence, rolling-4w, mean.
     baselines = naive_baseline_rmses(test_df, train_df)
@@ -697,17 +803,19 @@ def fit_and_score(spark: SparkSession) -> dict[str, DataFrame]:
     train_df.unpersist()  # done with the train split; free it before scoring
     test_df.unpersist()
 
-    def _winning_params(cv_model, param_names):
-        bm = cv_model.bestModel
-        return {p: bm.getOrDefault(p) for p in param_names}
-
-    gbt_best = _winning_params(gbt_model, ["maxDepth", "stepSize", "maxIter"])
-    rf_best = _winning_params(rf_model, ["maxDepth", "numTrees", "subsamplingRate"])
-    print(f"GBT  test RMSE: {gbt_rmse:.3f}  | best params: {gbt_best}")
-    print(f"RF   test RMSE: {rf_rmse:.3f}  | best params: {rf_best}")
+    gbt_best = {p.name: v for p, v in gbt_best_pm.items()}
+    rf_best = {p.name: v for p, v in rf_best_pm.items()}
+    print(
+        f"GBT  test RMSE: {gbt_rmse:.3f} (k-fold demo {gbt_cv_rmse:.3f})  "
+        f"| time-aware params: {gbt_best}"
+    )
+    print(
+        f"RF   test RMSE: {rf_rmse:.3f} (k-fold demo {rf_cv_rmse:.3f})  "
+        f"| time-aware params: {rf_best}"
+    )
     best_model = gbt_model if gbt_rmse <= rf_rmse else rf_model
     best_name = "GBT" if best_model is gbt_model else "RandomForest"
-    print(f"Selected: {best_name}")
+    print(f"Selected: {best_name} (selection=rolling_origin)")
 
     # Score the full series. The full frame must carry the same `features`
     # vector, built with the SAME train-fit imputer/assembler (refit on train
@@ -777,15 +885,21 @@ def fit_and_score(spark: SparkSession) -> dict[str, DataFrame]:
             float(baselines["persistence_lag1_rmse"]),
             float(baselines["rolling_4w_mean_rmse"]),
             float(baselines["train_mean_rmse"]),
+            float(gbt_cv_rmse),
+            float(rf_cv_rmse),
+            str(gbt_best),
+            str(rf_best),
+            "rolling_origin",
         )],
         schema=(
             "gbt_rmse double, rf_rmse double, best_name string, "
             "persistence_lag1_rmse double, rolling_4w_mean_rmse double, "
-            "train_mean_rmse double"
+            "train_mean_rmse double, gbt_cv_rmse double, rf_cv_rmse double, "
+            "gbt_best_params string, rf_best_params string, selection_method string"
         ),
     )
 
-    fi_vector = best_model.bestModel.featureImportances.toArray()
+    fi_vector = best_model.featureImportances.toArray()
     fi_rows = [(FEATURE_COLS[i], float(fi_vector[i])) for i in range(len(FEATURE_COLS))]
     feature_importances = spark.createDataFrame(
         fi_rows, schema="feature string, importance double"

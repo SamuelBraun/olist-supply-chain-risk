@@ -542,13 +542,19 @@ def train_lstm(text_labelled: DataFrame) -> dict:
         batch_size=256,
         input_tensor_shapes=[[LSTM_MAX_LEN]],
     )
-    scored = test_sdf.withColumn("score", score_udf(F.col("seq")))
-    # ≤9k-row test set; collect (score,label) pairs for the AUC metric only.
-    # BIG-DATA-SAFETY-ESCAPE: SMALL_SUMMARY_COLLECT — held-out scores for AUC
-    from sklearn.metrics import roc_auc_score
+    scored = test_sdf.withColumn("score", score_udf(F.col("seq")).cast("double"))
+    # AUC via Spark's distributed evaluator on the scored DataFrame — no driver
+    # collect, no sklearn, and the SAME metric implementation the LogReg model is
+    # scored with (BinaryClassificationEvaluator), so the two model AUCs are
+    # computed identically. The `score` column is the positive-class probability,
+    # passed as the raw prediction.
+    from pyspark.ml.evaluation import BinaryClassificationEvaluator
 
-    scored_pd = scored.select("score", "label").toPandas()
-    auc = float(roc_auc_score(scored_pd["label"], scored_pd["score"]))
+    auc = float(
+        BinaryClassificationEvaluator(
+            rawPredictionCol="score", labelCol="label", metricName="areaUnderROC"
+        ).evaluate(scored)
+    )
     return {
         "test_auc": auc,
         "train_loss_per_epoch": [float(x) for x in losses],

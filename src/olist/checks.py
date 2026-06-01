@@ -272,6 +272,25 @@ def check_cocustomer_graph() -> CheckResult:
     )
 
 
+def check_two_hop_substitutes() -> CheckResult:
+    """Multi-hop graph signal: `compute_two_hop_backups` builds transitive 2-hop
+    substitutes (a second expansion on the projection — not reproducible by a
+    single self-join), and the convergence layer consumes `two_hop_reach_count`
+    in the `escalate_no_backup` decision.
+    """
+    net_src = _src(network)
+    conv_src = _src(convergence)
+    has_fn = "def compute_two_hop_backups" in net_src
+    has_expansion = "left_anti" in net_src and "two_hop_reach_count" in net_src
+    wired = "two_hop_reach_count" in conv_src
+    ok = has_fn and has_expansion and wired
+    return CheckResult(
+        "Transitive 2-hop substitutes (graph-unique) feed escalation",
+        ok,
+        f"fn={has_fn}, expansion={has_expansion}, wired_into_escalation={wired}",
+    )
+
+
 def check_spark_dl_integration() -> CheckResult:
     src = _src(sentiment)
     has_distributor = "TorchDistributor" in src
@@ -291,6 +310,123 @@ def check_applyinpandas() -> CheckResult:
         "Grouped-map applyInPandas (UDF family)",
         ok,
         "applyInPandas present in sentiment.py" if ok else "missing applyInPandas",
+    )
+
+
+def _code_units() -> list[tuple[str, list[str]]]:
+    """(origin, lines) for every pipeline module and every notebook code cell.
+    Windows stay within a unit so look-back never crosses a file/cell boundary.
+    """
+    from .pipeline import streaming
+
+    units: list[tuple[str, list[str]]] = []
+    for mod in (demand, sentiment, network, convergence, streaming):
+        units.append((mod.__name__.split(".")[-1] + ".py", _src(mod).splitlines()))
+    code, _ = _nb_cells("main.ipynb")
+    for idx, cell in enumerate(code):
+        units.append((f"main.ipynb#cell{idx}", cell.splitlines()))
+    return units
+
+
+#: Whole-frame driver pulls. `.first()`/`.head(n)`/`.take(n)` are intentionally
+#: excluded — they are inherently row-bounded, so they cannot OOM the driver.
+_DRIVER_PULLS = (".collect()", ".toPandas()")
+_LOOKBACK = 8  # lines of chain/preamble context to scan for limit/escape tags
+
+
+def check_no_unguarded_collect() -> CheckResult:
+    """Every whole-frame driver pull (`.collect()`/`.toPandas()`) must be either
+    bounded by `.limit(` in its own chain or carry a `# BIG-DATA-SAFETY-ESCAPE:`
+    tag within the preceding few lines. This is the "is the library you use safe
+    at scale?" guard the brief asks for — nothing materialises an unbounded,
+    non-aggregated frame on the driver silently.
+    """
+    violations: list[str] = []
+    for origin, lines in _code_units():
+        for i, line in enumerate(lines):
+            if not any(sink in line for sink in _DRIVER_PULLS):
+                continue
+            if line.lstrip().startswith(("#", "*", '"', "'", ">")) or "`" in line:
+                continue  # comment / docstring prose (often backticked) mentioning the call
+            window = "\n".join(lines[max(0, i - _LOOKBACK): i + 1])
+            if ".limit(" in window or "BIG-DATA-SAFETY-ESCAPE" in window:
+                continue
+            violations.append(f"{origin}:{i + 1}: {line.strip()[:70]}")
+    ok = not violations
+    return CheckResult(
+        "Driver pulls (collect/toPandas) bounded by limit or escape-tagged",
+        ok,
+        "all guarded" if ok else f"{len(violations)} unguarded: {violations[:5]}",
+    )
+
+
+def check_no_unbounded_orderby() -> CheckResult:
+    """The brief's "ordering of data returned from queries" guard. A global
+    `orderBy`/`sort` is only unsafe when its (potentially large) result is pulled
+    to the driver without a bound: sorting that stays distributed (feeds `.show()`
+    or another transform) or sorts a small aggregate is fine. So we flag any
+    `.orderBy(`/`.sort(` (excluding `Window` specs) that flows into a
+    `.collect()`/`.toPandas()` within a few lines with no intervening `.limit(`
+    and no `# SAFE-ORDERBY:` / escape waiver.
+    """
+    violations: list[str] = []
+    for origin, lines in _code_units():
+        for i, line in enumerate(lines):
+            if not any(sink in line for sink in _DRIVER_PULLS):
+                continue
+            if line.lstrip().startswith(("#", "*", '"', "'", ">")) or "`" in line:
+                continue
+            window_lines = lines[max(0, i - 8): i + 1]
+            window = "\n".join(window_lines)
+            has_orderby = any(
+                ("orderBy(" in w or ".sort(" in w) and "Window" not in w
+                for w in window_lines
+            )
+            if not has_orderby:
+                continue
+            if ".limit(" in window or "BIG-DATA-SAFETY-ESCAPE" in window \
+                    or "SAFE-ORDERBY" in window:
+                continue
+            violations.append(f"{origin}:{i + 1}: {line.strip()[:70]}")
+    ok = not violations
+    return CheckResult(
+        "Ordered driver pulls bounded by limit or waived",
+        ok,
+        "all bounded" if ok else f"{len(violations)} unbounded: {violations[:5]}",
+    )
+
+
+def check_no_unpartitioned_window() -> CheckResult:
+    """`Window.orderBy(...)` with no `partitionBy` forces every row onto a single
+    partition to compute the global order — the textbook "won't scale across
+    partitions" pattern. Flag any such window in the pipeline transformation
+    modules unless it carries a `# SCALABLE-WINDOW:` waiver (e.g. it ranks a small
+    DISTINCT set, not the full frame). Doc/comment mentions are ignored.
+    """
+    from .pipeline import streaming
+
+    violations: list[str] = []
+    for mod in (demand, sentiment, network, convergence, streaming):
+        name = mod.__name__.split(".")[-1] + ".py"
+        lines = _src(mod).splitlines()
+        for i, line in enumerate(lines):
+            if "Window.orderBy(" not in line:
+                continue
+            if "partitionBy" in line:
+                continue
+            if line.lstrip().startswith(("#", "*", '"', "'", ">")) or "`" in line:
+                continue
+            window = "\n".join(lines[max(0, i - 3): i + 2])
+            if "SCALABLE-WINDOW" in window:
+                continue
+            violations.append(f"{name}:{i + 1}: {line.strip()[:70]}")
+    ok = not violations
+    return CheckResult(
+        "No unpartitioned Window.orderBy (single-partition global sort)",
+        ok,
+        "none (percentile rank/banding use QuantileDiscretizer/approxQuantile)"
+        if ok
+        else f"{len(violations)} found: {violations}",
     )
 
 
@@ -343,9 +479,13 @@ CHECKS: tuple[Callable[[], CheckResult], ...] = (
     check_lazy_eval_documented,
     check_outlier_treatment,
     check_cocustomer_graph,
+    check_two_hop_substitutes,
     check_spark_dl_integration,
     check_applyinpandas,
     check_streaming,
+    check_no_unguarded_collect,
+    check_no_unbounded_orderby,
+    check_no_unpartitioned_window,
     check_markdown_ratio,
     check_safety_log_consistency,
     check_parquet_artefacts,

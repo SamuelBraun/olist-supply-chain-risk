@@ -18,7 +18,7 @@ Tick each box only when the corresponding cell is committed and the notebook has
 ## Big-data safety (enforced by `check_safety_log_consistency`)
 - [x] Every `collect()` / `toPandas()` / non-Spark-library call is annotated with `# BIG-DATA-SAFETY-ESCAPE: <ID>` referencing a constant in `src/olist/safety.py`.
 - [x] Every ID in `safety.ALL_ESCAPES` has a row in `docs/big_data_safety_log.md` (call site, what it does, why it's an escape, production-scale alternative, why acceptable here).
-- [x] Every `orderBy()` is followed by `.limit()`.
+- [x] No unbounded ordered driver pull: every `orderBy()`/`sort()` that flows into `collect()`/`toPandas()` has an intervening `.limit()` or an explicit waiver. Enforced by `check_no_unbounded_orderby`; whole-frame driver pulls enforced by `check_no_unguarded_collect`. (Distributed sorts feeding `.show()`/further transforms need no bound.)
 - [x] Small lookups (`sellers`, `products`, `category_translation`, `geo_centroids`) joined with `broadcast()`.
 - [x] Hot DataFrames cached once and unpersisted before parquet write (demand `order_lines`, sentiment `reviews_with_seller`, network `order_lines` + `vertices` + `edges`).
 - [x] CSVs loaded via `loaders.*` (explicit schemas, no `inferSchema`).

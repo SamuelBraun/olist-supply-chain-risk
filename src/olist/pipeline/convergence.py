@@ -14,25 +14,33 @@ Weights and thresholds are fixed in advance (CLAUDE.md §4):
 * Percentile bands on the composite: CRITICAL = top 1%, WARNING = next 4%,
   SAFE = bottom 95%.
 
-Normalisation is percentile-rank (not min-max on p1/p99 bounds). Min-max left
-``demand_norm`` (std 0.034) and ``network_norm`` (std 0.056) nearly constant —
-both source columns are heavily right-skewed with a long thin tail, so once you
-clamp to p1/p99 almost every seller lands near the same value. That made the
-composite ~96% the star rating (``corr(risk_score, sentiment_norm)=0.96``) and
-left the CRITICAL band mathematically dead (max risk_score 0.705 < 0.75).
-Percentile rank makes each axis ~uniform on [0, 1] so the three signals
+Normalisation is (approximate) percentile-rank, not min-max on p1/p99 bounds.
+Min-max left ``demand_norm`` (std 0.034) and ``network_norm`` (std 0.056) nearly
+constant — both source columns are heavily right-skewed with a long thin tail,
+so once you clamp to p1/p99 almost every seller lands near the same value. That
+made the composite ~96% the star rating (``corr(risk_score, sentiment_norm)=
+0.96``) and left the CRITICAL band mathematically dead (max risk_score 0.705 <
+0.75). Percentile rank makes each axis ~uniform on [0, 1] so the three signals
 contribute equally under the existing weights, and percentile bands guarantee
 the CRITICAL band actually fires.
+
+Both legs are computed with **distributable** primitives — ``QuantileDiscretizer``
+for the per-axis ranks and ``approxQuantile`` for the band cut-points (both use
+per-partition sketches) — rather than ``percent_rank().over(Window.orderBy(...))``,
+which has no ``partitionBy`` and would move the whole population onto one
+partition to sort. At this dataset size the approximation is indistinguishable
+from exact percentile rank; at scale it is the difference between a job that
+distributes and one that does not.
 """
 
 from __future__ import annotations
 
-from pyspark.sql import DataFrame, SparkSession, Window
+from pyspark.ml.feature import QuantileDiscretizer
+from pyspark.sql import DataFrame, SparkSession
 from pyspark.sql import functions as F
 
 from ..cache import resolve_path, step
 from ..safety import (  # noqa: F401 — referenced by annotation comments
-    RISK_NORM_AGG,
     STATE_AGG_VIZ,
     TOP50_VIZ,
 )
@@ -51,19 +59,51 @@ RISK_CRITICAL_THRESHOLD = 0.75
 RISK_SAFE_THRESHOLD = 0.40
 
 
-def _percentile_rank(col: str, invert: bool = False):
-    """Percentile-rank a column into [0, 1] via a window ``percent_rank()``.
+#: Granularity of the distributed percentile-rank approximation. 1000 buckets
+#: gives ~0.1% resolution — indistinguishable from exact percent_rank at this
+#: population, but computed via approxQuantile sketches that scale across
+#: partitions (unlike an unpartitioned Window.orderBy, which drags the whole
+#: population onto one partition to sort).
+NORM_BUCKETS = 1000
 
-    ``percent_rank`` returns ``(rank - 1) / (n - 1)`` over the ordered
-    partition, so the lowest value maps to 0.0, the highest to 1.0, and the
-    population is spread ~uniformly in between regardless of the raw column's
-    skew. This is what lets the three axes contribute equally under fixed
-    weights — each becomes a rank, not a clamped distance from a percentile
-    bound. ``invert=True`` ranks descending (used for sentiment, where a higher
-    star rating means *lower* risk).
+
+def _scalable_percentile_norm(
+    df: DataFrame, in_col: str, out_col: str, invert: bool = False
+) -> DataFrame:
+    """Approximate percentile rank of ``in_col`` into ``out_col`` ∈ [0, 1],
+    computed so it scales across partitions.
+
+    Replaces ``percent_rank().over(Window.orderBy(col))`` — which has no
+    ``partitionBy`` and so moves the entire population onto a single partition to
+    sort, the textbook "won't scale across partitions" anti-pattern. Instead
+    ``QuantileDiscretizer`` bins the column into equal-frequency buckets using
+    per-partition ``approxQuantile`` sketches merged across the cluster, so the
+    work distributes. The bucket index normalised by the max realised bucket
+    gives an ~uniform [0, 1] rank, which is what lets the three axes contribute
+    equally under fixed weights. ``invert=True`` ranks descending (sentiment: a
+    higher star rating means *lower* risk). Ties share a bucket — the natural,
+    and arguably more correct, handling for the heavily-tied delay column.
     """
-    order = F.col(col).desc() if invert else F.col(col).asc()
-    return F.percent_rank().over(Window.orderBy(order))
+    src = in_col
+    if invert:
+        src = f"_neg_{in_col}"
+        df = df.withColumn(src, -F.col(in_col))
+    bkt = f"_bkt_{out_col}"
+    discretizer = QuantileDiscretizer(
+        numBuckets=NORM_BUCKETS,
+        inputCol=src,
+        outputCol=bkt,
+        relativeError=0.001,
+        handleInvalid="keep",
+    )
+    df = discretizer.fit(df).transform(df)
+    # Max bucket as a single scalar (distributed agg, one row to the driver) so
+    # each axis spans the full [0, 1] regardless of how many buckets it realised.
+    # BIG-DATA-SAFETY-ESCAPE: SMALL_SUMMARY_COLLECT — single-scalar max bucket
+    max_bkt = df.agg(F.max(bkt)).first()[0]
+    denom = float(max_bkt) if max_bkt and max_bkt > 0 else 1.0
+    df = df.withColumn(out_col, F.col(bkt) / F.lit(denom))
+    return df.drop(*([bkt] + ([src] if invert else [])))
 
 
 @step(
@@ -75,20 +115,25 @@ def _percentile_rank(col: str, invert: bool = False):
     ],
     outputs=["outputs/seller_risk_index.parquet"],
     code_deps=_CONV_CODE_DEPS,
-    version=2,
+    version=4,
 )
 def build_seller_risk_index(spark: SparkSession) -> DataFrame:
-    """Inner-join the three per-seller parquets, percentile-rank normalise each
-    risk component, weight 0.35/0.35/0.30, band the composite by percentile
+    """Inner-join the three per-seller parquets, normalise each risk component to
+    an approximate percentile rank, weight 0.35/0.35/0.30, band the composite
     (CRITICAL top 1% / WARNING next 4% / SAFE bottom 95%), write
     `outputs/seller_risk_index.parquet`.
 
-    Each `*_norm` column is the seller's percentile rank in [0, 1] for that
-    component, so all four point the same direction (higher = more risky) and
-    each axis is ~uniform on [0, 1]. Sentiment is ranked descending (a higher
-    star rating is *lower* risk). Percentile ranking replaced the old
-    min-max(p1/p99) scaling, which left demand and network nearly constant and
-    let the star rating dominate the composite.
+    Each `*_norm` column is the seller's approximate percentile rank in [0, 1]
+    for that component (via `_scalable_percentile_norm` → `QuantileDiscretizer`),
+    so all four point the same direction (higher = more risky) and each axis is
+    ~uniform on [0, 1]. Sentiment is ranked descending (a higher star rating is
+    *lower* risk). Both the normalisation and the banding are **distributable**:
+    `QuantileDiscretizer` and `approxQuantile` use per-partition sketches rather
+    than the single-partition `percent_rank().over(Window.orderBy(...))` they
+    replaced (which dragged the whole population onto one partition to sort).
+    The percentile framing itself replaced the earlier min-max(p1/p99) scaling,
+    which left demand and network nearly constant and let the star rating
+    dominate the composite.
 
     The network axis is a 50/50 blend of *contagion* (delayed-subgraph
     PageRank — a late-shipping hub) and *substitutability deficit* (high
@@ -110,56 +155,56 @@ def build_seller_risk_index(spark: SparkSession) -> DataFrame:
                 "backup_seller_id",
                 "backup_strength",
                 "community_id",
+                "two_hop_reach_count",
             ),
             "seller_id",
             "inner",
         )
     )
+    # Approximate-percentile-rank each raw component into [0, 1] (sentiment
+    # descending). Distributable — no single-partition window.
+    normed = _scalable_percentile_norm(joined, "avg_delay_days", "demand_norm")
+    normed = _scalable_percentile_norm(
+        normed, "avg_sentiment_score", "sentiment_norm", invert=True
+    )
+    normed = _scalable_percentile_norm(
+        normed, "network_risk_score", "contagion_norm"
+    )
+    normed = _scalable_percentile_norm(
+        normed, "substitutability_deficit", "deficit_norm"
+    )
+    normed = normed.withColumn(
+        "network_norm",
+        0.5 * F.col("contagion_norm") + 0.5 * F.col("deficit_norm"),
+    ).withColumn(
+        "risk_score",
+        RISK_WEIGHTS["demand"] * F.col("demand_norm")
+        + RISK_WEIGHTS["sentiment"] * F.col("sentiment_norm")
+        + RISK_WEIGHTS["network"] * F.col("network_norm"),
+    )
+    # Band by distributed approxQuantile cut-points on the composite (the 95th
+    # and 99th percentiles) instead of an unpartitioned percent_rank window. Two
+    # scalars returned to the driver; CRITICAL = top 1%, WARNING = next 4%.
+    warn_cut, crit_cut = normed.approxQuantile(
+        "risk_score", [RISK_WARNING_PCTL, RISK_CRITICAL_PCTL], 0.001
+    )
     return (
-        # Percentile-rank each raw component into [0, 1] (sentiment descending).
-        joined.withColumn(
-            "demand_norm",
-            _percentile_rank("avg_delay_days"),
-        )
-        .withColumn(
-            "sentiment_norm",
-            _percentile_rank("avg_sentiment_score", invert=True),
-        )
-        .withColumn(
-            "contagion_norm",
-            _percentile_rank("network_risk_score"),
-        )
-        .withColumn(
-            "deficit_norm",
-            _percentile_rank("substitutability_deficit"),
-        )
-        .withColumn(
-            "network_norm",
-            0.5 * F.col("contagion_norm") + 0.5 * F.col("deficit_norm"),
-        )
-        .withColumn(
-            "risk_score",
-            RISK_WEIGHTS["demand"] * F.col("demand_norm")
-            + RISK_WEIGHTS["sentiment"] * F.col("sentiment_norm")
-            + RISK_WEIGHTS["network"] * F.col("network_norm"),
-        )
-        # Band by the composite's own percentile so CRITICAL always fires.
-        .withColumn(
-            "risk_pctl",
-            F.percent_rank().over(Window.orderBy(F.col("risk_score").asc())),
-        )
-        .withColumn(
+        normed.withColumn(
             "risk_class",
-            F.when(F.col("risk_pctl") > RISK_CRITICAL_PCTL, "CRITICAL")
-            .when(F.col("risk_pctl") > RISK_WARNING_PCTL, "WARNING")
+            F.when(F.col("risk_score") > crit_cut, "CRITICAL")
+            .when(F.col("risk_score") > warn_cut, "WARNING")
             .otherwise("SAFE"),
         )
-        .drop("risk_pctl")
+        # Escalate a non-SAFE seller only when it has NO substitute at all —
+        # neither a direct co-customer backup nor a transitive 2-hop substitute.
+        # The 2-hop term removes false escalations for connected sellers whose
+        # only backup is two hops away (see network.compute_two_hop_backups).
         .withColumn(
             "escalate_no_backup",
             (
                 (F.col("risk_class") != "SAFE")
                 & (F.coalesce(F.col("backup_strength"), F.lit(0)) == 0)
+                & (F.coalesce(F.col("two_hop_reach_count"), F.lit(0)) == 0)
             ).cast("int"),
         )
         .select(
@@ -178,6 +223,7 @@ def build_seller_risk_index(spark: SparkSession) -> DataFrame:
             "substitutability_deficit",
             "backup_seller_id",
             "backup_strength",
+            "two_hop_reach_count",
             "community_id",
             "escalate_no_backup",
             "sentiment_declining",
@@ -376,5 +422,6 @@ def state_mean_risk(risk: DataFrame):
         )
         .filter(F.col("seller_state").isNotNull())
         .orderBy(F.col("mean_risk").desc())
+        # BIG-DATA-SAFETY-ESCAPE: STATE_AGG_VIZ — 27-row sorted aggregate
         .toPandas()
     )

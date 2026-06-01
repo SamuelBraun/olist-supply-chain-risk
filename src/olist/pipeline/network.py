@@ -16,6 +16,7 @@ Caches:
 * `outputs/_cache/network_cocustomer_centrality.parquet`
 * `outputs/_cache/network_communities.parquet`
 * `outputs/_cache/network_backup_map.parquet`
+* `outputs/_cache/network_two_hop_backups.parquet`
 """
 
 from __future__ import annotations
@@ -40,6 +41,11 @@ _NET_CODE_DEPS = [
     "src/olist/schemas.py",
     "src/olist/transforms.py",
 ]
+
+#: Top-K strongest co-customer partners kept per seller before the 2-hop
+#: expansion (caps the self-join fan-out so it scales; also restricts the search
+#: to meaningful substitution links rather than weak coincidences).
+TWO_HOP_MAX_PARTNERS = 25
 
 
 # ---------------------------------------------------------------------------
@@ -205,7 +211,16 @@ def seller_degree_stats(spark: SparkSession) -> DataFrame:
     version=1,
 )
 def compute_pagerank(spark: SparkSession) -> DataFrame:
-    """PageRank on the bidirectional graph; sellers only. resetProb=0.15, maxIter=10."""
+    """PageRank on the bidirectional purchase graph; sellers only
+    (resetProb=0.15, maxIter=10).
+
+    Honest framing: on a *bipartite* seller↔customer graph where customers are
+    overwhelmingly one-time buyers, PageRank provably collapses to weighted
+    in-degree — we confirm `corr(in_degree, pagerank_score) ≈ 1.0` in §5.5. So
+    this is kept as a *sanity ranking* of seller prominence, not as a graph-unique
+    insight. The graph earns its keep elsewhere: the delayed-subgraph contagion
+    PageRank (`compute_delayed_subgraph_pagerank`) and the multi-hop
+    substitutability work, where structure adds information degree cannot."""
     gf = build_graph_frame(spark)
     pr = gf.pageRank(resetProbability=0.15, maxIter=10)
     return pr.vertices.filter(F.col("type") == "seller").select(
@@ -226,6 +241,12 @@ def compute_pagerank(spark: SparkSession) -> DataFrame:
 def compute_connected_components(spark: SparkSession) -> DataFrame:
     # GraphX variant: the default CC OOMs the 6g driver on ~100k vertices.
     # See decisions_log 2026-04-22. component_size == 1 => isolated seller.
+    #
+    # Honest framing: with bidirectional edges this graph is one giant component
+    # and zero isolated sellers — a near-trivial result, reported as such (not a
+    # "market-fragmentation map"). It earns its place as (a) the `is_isolated`
+    # sanity flag and (b) a demonstration of the GraphX-CC scale workaround; the
+    # actionable substitution structure comes from the co-customer projection.
     gf = build_graph_frame(spark)
     root = Path(__file__).resolve().parents[3]
     checkpoint_dir = root / "outputs" / "_gf_checkpoints"
@@ -348,10 +369,12 @@ def build_cocustomer_graph(spark: SparkSession):
 )
 def compute_cocustomer_centrality(spark: SparkSession) -> DataFrame:
     """PageRank on the seller co-customer projection = how embedded a seller is
-    in the substitution network. Structurally distinct from raw in-degree
-    (customer count): a seller can serve many customers yet sit at the edge of
-    the substitution graph, or serve few yet bridge clusters. We report the
-    correlation against in-degree in the notebook to prove it is not a proxy.
+    in the substitution network. This is a partial refinement of degree, not a
+    clean break from it: `corr(in_degree, cocustomer_centrality) ≈ 0.75`, so it
+    carries real structural information (a seller can serve many customers yet
+    sit at the edge of the substitution graph, or bridge clusters with few) but
+    is correlated with raw customer count. We report that correlation in §5.5
+    rather than claim independence.
     """
     gf = build_cocustomer_graph(spark)
     pr = gf.pageRank(resetProbability=0.15, maxIter=10)
@@ -371,9 +394,13 @@ def compute_cocustomer_centrality(spark: SparkSession) -> DataFrame:
 def compute_substitution_communities(spark: SparkSession) -> DataFrame:
     """Label propagation on the co-customer projection groups sellers into
     substitution communities — clusters that can absorb each other's demand if
-    one member fails. Far more actionable than the bipartite connected-
-    components result (one giant component, 0 isolated sellers).
-    Columns: seller_id, community_id, community_size.
+    one member fails. More actionable than the bipartite connected-components
+    result (one giant component, 0 isolated sellers), but sparse by construction:
+    because Olist customers are overwhelmingly one-time buyers, only ~45% of
+    sellers share a customer with anyone, so the majority carry no community and
+    most realised communities are small (many singletons / pairs). §5.5 states
+    this coverage honestly rather than overselling the communities as a dense
+    market map. Columns: seller_id, community_id, community_size.
     """
     gf = build_cocustomer_graph(spark)
     communities = gf.labelPropagation(maxIter=5)
@@ -429,6 +456,98 @@ def compute_backup_map(spark: SparkSession) -> DataFrame:
         )
     )
     return best.join(partner_counts, "seller_id", "left")
+
+
+@step(
+    name="network.two_hop_backups",
+    inputs=["outputs/_cache/network_cocustomer_edges.parquet"],
+    outputs=["outputs/_cache/network_two_hop_backups.parquet"],
+    code_deps=_NET_CODE_DEPS,
+    version=2,
+)
+def compute_two_hop_backups(spark: SparkSession) -> DataFrame:
+    """Transitive (2-hop) substitutes on the seller co-customer projection.
+
+    The direct backup map (`compute_backup_map`) only links sellers that share a
+    customer outright. But substitutability is transitive: if A shares customers
+    with B and B with C, then C can absorb A's demand at two hops even when A and
+    C never shared a customer. This is a genuinely graph-native question — a
+    single self-join on the projection gives direct (1-hop) partners; a SECOND
+    expansion gives 2-hop reach, the distributed form of a length-2 BFS launched
+    from every seller at once. No DataFrame `groupBy` produces it without
+    traversing the projection.
+
+    Scope, stated honestly: only sellers embedded in the projection gain 2-hop
+    reach. Because Olist customers are overwhelmingly one-time buyers, ~55% of
+    sellers share no customer with anyone and stay unreachable at any hop (see
+    the coverage line in NB §5.5). The value here is reducing false "no backup"
+    escalations for connected sellers whose only substitute is two hops away.
+
+    Scalability: a naive `a→b→c` expansion is O(Σ degree²) and skews badly on a
+    high-degree bridge. We bound it by keeping only each seller's TOP-K strongest
+    partners (a *partitioned* `row_number()` window — scales fine) before the
+    expansion, which caps out-degree to K and, not coincidentally, restricts the
+    search to meaningful substitution links rather than weak coincidental ones.
+    Residual skew from a few popular bridges is absorbed by Spark AQE skew-join
+    handling (on by default in 3.5).
+
+    Columns: seller_id, two_hop_reach_count, nearest_two_hop_seller.
+    """
+    from pyspark.sql.window import Window
+
+    edges = spark.read.parquet(
+        resolve_path("outputs/_cache/network_cocustomer_edges.parquet")
+    )
+    direct = edges.select("src", "dst").distinct()
+    # Cap each seller to its TOP-K strongest partners (partitioned window —
+    # distributable) to bound the expansion's fan-out.
+    top_partners = Window.partitionBy("src").orderBy(
+        F.col("weight").desc(), F.col("dst")
+    )
+    capped = (
+        edges.withColumn("_rk", F.row_number().over(top_partners))
+        .filter(F.col("_rk") <= TWO_HOP_MAX_PARTNERS)
+        .drop("_rk")
+    )
+    # One expansion step on the capped projection: a -> b -> c.
+    hop1 = capped.select(F.col("src").alias("a"), F.col("dst").alias("b"))
+    hop2 = capped.select(
+        F.col("src").alias("b"),
+        F.col("dst").alias("c"),
+        F.col("weight").alias("bridge_weight"),
+    )
+    two_hop = (
+        hop1.join(hop2, "b")
+        .filter(F.col("a") != F.col("c"))  # drop trivial return-to-self
+        .select(
+            F.col("a").alias("seller_id"),
+            F.col("c").alias("two_hop_seller"),
+            "bridge_weight",
+        )
+    )
+    # Keep only genuine 2-hop-ONLY links — exclude pairs already directly linked.
+    two_hop_only = two_hop.join(
+        direct.select(
+            F.col("src").alias("seller_id"), F.col("dst").alias("two_hop_seller")
+        ),
+        ["seller_id", "two_hop_seller"],
+        "left_anti",
+    )
+    reach = two_hop_only.groupBy("seller_id").agg(
+        F.countDistinct("two_hop_seller").alias("two_hop_reach_count")
+    )
+    # Nearest 2-hop substitute = reachable via the strongest shared-customer bridge.
+    pick = Window.partitionBy("seller_id").orderBy(
+        F.col("bridge_weight").desc(), F.col("two_hop_seller")
+    )
+    nearest = (
+        two_hop_only.withColumn("rk", F.row_number().over(pick))
+        .filter(F.col("rk") == 1)
+        .select(
+            "seller_id", F.col("two_hop_seller").alias("nearest_two_hop_seller")
+        )
+    )
+    return reach.join(nearest, "seller_id", "left")
 
 
 @step(
@@ -529,23 +648,30 @@ def compute_delayed_subgraph_pagerank(spark: SparkSession) -> DataFrame:
         "outputs/_cache/network_cocustomer_centrality.parquet",
         "outputs/_cache/network_communities.parquet",
         "outputs/_cache/network_backup_map.parquet",
+        "outputs/_cache/network_two_hop_backups.parquet",
     ],
     outputs=["outputs/nb3_seller_network_scores.parquet"],
     code_deps=_NET_CODE_DEPS,
-    version=2,
+    version=3,
 )
 def build_seller_network_scores(spark: SparkSession) -> DataFrame:
     """Assemble per-seller network scores from the cached GraphFrame outputs.
 
     Columns: seller_id, pagerank_score, in_degree, is_isolated,
     cocustomer_centrality, community_id, backup_seller_id, backup_strength,
-    n_cocustomer_partners, substitutability_deficit, network_risk_score.
+    n_cocustomer_partners, substitutability_deficit, network_risk_score,
+    two_hop_reach_count, nearest_two_hop_seller.
 
-    `substitutability_deficit = in_degree / (1 + n_cocustomer_partners)` is the
-    graph-unique risk signal: high impact (many customers) with few substitute
-    sellers = a single point of failure. It is a degree×neighbourhood
-    interaction, so it does NOT track raw in-degree — a well-substituted hub
-    scores low, an isolated hub scores high.
+    `substitutability_deficit = in_degree / (1 + n_cocustomer_partners)` is a
+    *degree-adjusted* risk signal: high impact (many customers) discounted by how
+    many substitute sellers share its customers. It is NOT a fresh graph-unique
+    axis — for the ~55% of sellers with zero co-customer partners it equals
+    in_degree exactly, and across the whole population its rank order tracks
+    in-degree closely (Spearman ≈ 0.89; `degree_proxy_diagnostics` reports this
+    openly). We keep it as an honest refinement of degree, not as proof of
+    graph-uniqueness. The genuinely orthogonal network signal is
+    `network_risk_score` (the delayed-subgraph contagion PageRank); the
+    convergence layer blends the two 50/50 so the network axis is not pure degree.
     """
     vertices = spark.read.parquet(resolve_path("outputs/_cache/network_vertices.parquet"))
     seller_pagerank = spark.read.parquet(resolve_path("outputs/_cache/network_pagerank.parquet"))
@@ -554,6 +680,7 @@ def build_seller_network_scores(spark: SparkSession) -> DataFrame:
     centrality = spark.read.parquet(resolve_path("outputs/_cache/network_cocustomer_centrality.parquet"))
     communities = spark.read.parquet(resolve_path("outputs/_cache/network_communities.parquet"))
     backup = spark.read.parquet(resolve_path("outputs/_cache/network_backup_map.parquet"))
+    two_hop = spark.read.parquet(resolve_path("outputs/_cache/network_two_hop_backups.parquet"))
 
     # Recompute per-seller degree stats (cheap).
     seller_degrees = seller_degree_stats(spark)
@@ -591,6 +718,7 @@ def build_seller_network_scores(spark: SparkSession) -> DataFrame:
         .join(centrality, "seller_id", "left")
         .join(communities.select("seller_id", "community_id"), "seller_id", "left")
         .join(backup, "seller_id", "left")
+        .join(two_hop, "seller_id", "left")
         .fillna(
             {
                 "is_isolated": 0,
@@ -601,6 +729,7 @@ def build_seller_network_scores(spark: SparkSession) -> DataFrame:
                 "backup_strength": 0,
                 "n_cocustomer_partners": 0,
                 "community_id": -1,
+                "two_hop_reach_count": 0,
             }
         )
         .withColumn(
@@ -626,49 +755,46 @@ def degree_proxy_diagnostics(spark: SparkSession) -> DataFrame:
     in-degree. This function surfaces both so the notebook can state the limit
     honestly rather than lean on the flattering linear number.
 
-    Spearman is computed as the Pearson correlation of the rank-transformed
-    columns: each metric (and in_degree) is replaced by its `rank()` over the
-    full window via a Spark Window, then `F.corr` is taken on the ranks. Ties
-    take the ordinal `rank()` position, which is adequate for the few exact ties
-    here and keeps the computation fully Spark-native (no driver collect).
+    Spearman is computed with Spark's distributed `pyspark.ml.stat.Correlation`
+    (method="spearman") on a feature vector of [in_degree, signals]. It ranks the
+    columns with a distributed algorithm and returns a small correlation matrix,
+    so it scales across partitions — unlike the earlier `rank().over(Window.
+    orderBy(...))`, which had no `partitionBy` and so sorted the whole population
+    on one partition. Pearson uses plain `F.corr` aggregations (already
+    distributable). Only the resulting k×k matrix (16 scalars) reaches the driver.
 
     Returns a small Spark DataFrame, one row per signal:
     (signal, pearson_corr, spearman_corr).
     """
-    from pyspark.sql.window import Window
+    from pyspark.ml.feature import VectorAssembler
+    from pyspark.ml.stat import Correlation
 
     scores = spark.read.parquet(
         resolve_path("outputs/nb3_seller_network_scores.parquet")
     )
     signals = ["pagerank_score", "substitutability_deficit", "cocustomer_centrality"]
+    cols = ["in_degree", *signals]
 
-    # Rank-transform every column once (whole-frame window) for the Spearman leg.
-    ranked = scores.select("in_degree", *signals)
-    rank_cols = ["in_degree", *signals]
-    for col_name in rank_cols:
-        whole_frame = Window.orderBy(F.col(col_name))
-        ranked = ranked.withColumn(f"rank_{col_name}", F.rank().over(whole_frame))
+    # Pearson leg — distributed aggregations, no window.
+    pearson_row = scores.agg(
+        *[F.corr("in_degree", signal).alias(signal) for signal in signals]
+    ).first()
 
-    pearson_aggs = [
-        F.corr("in_degree", signal).alias(f"pearson_{signal}") for signal in signals
-    ]
-    spearman_aggs = [
-        F.corr("rank_in_degree", f"rank_{signal}").alias(f"spearman_{signal}")
-        for signal in signals
-    ]
-    stats_row = ranked.agg(*pearson_aggs, *spearman_aggs).first()
+    # Spearman leg — Spark's distributed rank-correlation over a feature vector.
+    assembled = VectorAssembler(
+        inputCols=cols, outputCol="features", handleInvalid="skip"
+    ).transform(scores.select(*cols))
+    # BIG-DATA-SAFETY-ESCAPE: SMALL_SUMMARY_COLLECT — k×k correlation matrix only
+    spearman_matrix = Correlation.corr(assembled, "features", "spearman").head()[0]
+    spearman_arr = spearman_matrix.toArray()  # in_degree is row/col 0
 
     diag_rows = [
         (
             signal,
-            float(stats_row[f"pearson_{signal}"])
-            if stats_row[f"pearson_{signal}"] is not None
-            else None,
-            float(stats_row[f"spearman_{signal}"])
-            if stats_row[f"spearman_{signal}"] is not None
-            else None,
+            float(pearson_row[signal]) if pearson_row[signal] is not None else None,
+            float(spearman_arr[0][idx + 1]),
         )
-        for signal in signals
+        for idx, signal in enumerate(signals)
     ]
     return spark.createDataFrame(
         diag_rows,
