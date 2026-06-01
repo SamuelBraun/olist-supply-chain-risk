@@ -17,6 +17,11 @@ Caches:
 * `outputs/_cache/network_communities.parquet`
 * `outputs/_cache/network_backup_map.parquet`
 * `outputs/_cache/network_two_hop_backups.parquet`
+* `outputs/_cache/network_seller_category.parquet`
+* `outputs/_cache/network_catregion_edges.parquet`
+* `outputs/_cache/network_catregion_centrality.parquet`
+* `outputs/_cache/network_catregion_communities.parquet`
+* `outputs/_cache/network_catregion_backups.parquet`
 """
 
 from __future__ import annotations
@@ -28,7 +33,13 @@ from pyspark.sql import functions as F
 from pyspark.sql.functions import broadcast
 
 from ..cache import resolve_path, step
-from ..loaders import load_customers, load_order_items, load_orders, load_sellers
+from ..loaders import (
+    load_customers,
+    load_order_items,
+    load_orders,
+    load_products,
+    load_sellers,
+)
 from ..safety import (  # noqa: F401 — referenced by annotation comments
     BFS_BACKUP_COLLECT,
     TOP10_PAGERANK_DRIVER,
@@ -550,6 +561,237 @@ def compute_two_hop_backups(spark: SparkSession) -> DataFrame:
     return reach.join(nearest, "seller_id", "left")
 
 
+# ---------------------------------------------------------------------------
+# Co-category + region substitution projection — the DENSE, decision-grade layer
+#
+# The co-customer projection above is sparse (Olist customers are overwhelmingly
+# one-time buyers, so only ~7.6% of sellers share >=2 customers). It is an honest
+# demonstration of GraphFrames on customer-overlap data, but it cannot answer the
+# core supply-chain question for the other ~92% of sellers. This projection links
+# sellers that *compete* — they sell overlapping product categories in the same
+# state — which is dense (most sellers have same-category, same-region rivals), so
+# the community / centrality / backup signals on it are non-degenerate and feed
+# the risk index with a real substitutability measure.
+#
+# Construct-validity note: the edges are a self-join on (state, category), so the
+# EDGE set is not graph-unique; the value is (a) a per-seller substitute count and
+# deployable backup for ~all sellers, and (b) community / centrality structure on a
+# graph that is dense enough for those algorithms to be meaningful. This is a
+# better-motivated signal than the bipartite degree proxy it replaces; it is NOT a
+# measured predictive-lift validation (see NB §5.5 / §7.2).
+# ---------------------------------------------------------------------------
+
+#: Top-K sellers kept per (state, category) cell before the pairwise edge
+#: expansion. Bounds the O(sum cell^2) self-join fan-out (a popular cell like
+#: SP x bed_bath_table has hundreds of sellers); ranked by trading volume so the
+#: strongest competitors are kept. Residual cross-cell skew is left to Spark AQE.
+CATREGION_MAX_PER_CELL = 50
+
+
+@step(
+    name="network.seller_category_cells",
+    inputs=[
+        "data/olist_order_items_dataset.csv",
+        "data/olist_products_dataset.csv",
+        "data/olist_sellers_dataset.csv",
+    ],
+    outputs=["outputs/_cache/network_seller_category.parquet"],
+    code_deps=_NET_CODE_DEPS,
+    version=1,
+)
+def build_seller_category_cells(spark: SparkSession) -> DataFrame:
+    """Map each seller to the (state, product-category) "cells" it operates in.
+
+    A cell is a (seller_state, product_category_name) pair — the unit of local
+    competition. order_items -> products gives seller->category; sellers gives the
+    seller's state. Returns distinct (seller_id, seller_state, category, n_items),
+    where n_items is the seller's order-line volume in that cell (used to rank
+    competitors when capping dense cells). Sellers with a null category or state
+    are dropped (cannot place them in a competitive cell).
+    """
+    order_items = load_order_items(spark)
+    products = load_products(spark)
+    sellers = load_sellers(spark)
+    return (
+        order_items.join(
+            broadcast(products.select("product_id", "product_category_name")),
+            "product_id",
+            "left",
+        )
+        .join(
+            broadcast(sellers.select("seller_id", "seller_state")),
+            "seller_id",
+            "left",
+        )
+        .filter(
+            F.col("product_category_name").isNotNull()
+            & F.col("seller_state").isNotNull()
+        )
+        .groupBy("seller_id", "seller_state", "product_category_name")
+        .agg(F.count("*").alias("n_items"))
+    )
+
+
+@step(
+    name="network.catregion_edges",
+    inputs=["outputs/_cache/network_seller_category.parquet"],
+    outputs=["outputs/_cache/network_catregion_edges.parquet"],
+    code_deps=_NET_CODE_DEPS,
+    version=1,
+)
+def build_catregion_edges(spark: SparkSession) -> DataFrame:
+    """Seller<->seller edges: two sellers are linked when they share at least one
+    (state, category) cell — i.e. they sell the same product category in the same
+    state, so each is a candidate local substitute for the other. Edge weight =
+    number of shared (state, category) cells. Emitted both directions.
+
+    Scalability: a self-join on the cell key fans out as O(sum cell_size^2). We cap
+    each cell to its top-`CATREGION_MAX_PER_CELL` sellers by volume (a partitioned
+    row_number window — distributes fine) before the pairwise expansion, which
+    bounds fan-out and keeps the strongest competitors; AQE absorbs residual skew.
+    """
+    from pyspark.sql.window import Window
+
+    cells = spark.read.parquet(
+        resolve_path("outputs/_cache/network_seller_category.parquet")
+    )
+    by_volume = Window.partitionBy("seller_state", "product_category_name").orderBy(
+        F.col("n_items").desc(), F.col("seller_id")
+    )
+    capped = (
+        cells.withColumn("_rk", F.row_number().over(by_volume))
+        .filter(F.col("_rk") <= CATREGION_MAX_PER_CELL)
+        .select("seller_id", "seller_state", "product_category_name")
+    )
+    left = capped.select(
+        F.col("seller_id").alias("a"),
+        "seller_state",
+        "product_category_name",
+    )
+    right = capped.select(
+        F.col("seller_id").alias("b"),
+        "seller_state",
+        "product_category_name",
+    )
+    pairs = (
+        left.join(right, ["seller_state", "product_category_name"])
+        .filter(F.col("a") < F.col("b"))
+        .groupBy("a", "b")
+        .agg(F.count("*").alias("weight"))
+    )
+    forward = pairs.select(
+        F.col("a").alias("src"), F.col("b").alias("dst"), "weight"
+    )
+    backward = pairs.select(
+        F.col("b").alias("src"), F.col("a").alias("dst"), "weight"
+    )
+    return forward.unionByName(backward)
+
+
+def build_catregion_graph(spark: SparkSession):
+    """Reconstruct the seller co-category+region GraphFrame from cached edges.
+    Vertices = sellers appearing in any co-category edge (mirrors
+    build_cocustomer_graph).
+    """
+    from graphframes import GraphFrame
+
+    edges = spark.read.parquet(
+        resolve_path("outputs/_cache/network_catregion_edges.parquet")
+    )
+    vertices = (
+        edges.select(F.col("src").alias("id"))
+        .unionByName(edges.select(F.col("dst").alias("id")))
+        .distinct()
+    )
+    return GraphFrame(vertices, edges)
+
+
+@step(
+    name="network.catregion_centrality",
+    inputs=["outputs/_cache/network_catregion_edges.parquet"],
+    outputs=["outputs/_cache/network_catregion_centrality.parquet"],
+    code_deps=_NET_CODE_DEPS,
+    version=1,
+)
+def compute_catregion_centrality(spark: SparkSession) -> DataFrame:
+    """PageRank on the (dense) co-category+region projection = how embedded a
+    seller is in the competitive network. On a dense graph this is non-degenerate
+    (unlike bipartite PageRank, which collapses to degree): it ranks sellers that
+    compete across many crowded category-region cells. Columns: seller_id,
+    catregion_centrality.
+    """
+    gf = build_catregion_graph(spark)
+    pr = gf.pageRank(resetProbability=0.15, maxIter=10)
+    return pr.vertices.select(
+        F.col("id").alias("seller_id"),
+        F.col("pagerank").alias("catregion_centrality"),
+    )
+
+
+@step(
+    name="network.catregion_communities",
+    inputs=["outputs/_cache/network_catregion_edges.parquet"],
+    outputs=["outputs/_cache/network_catregion_communities.parquet"],
+    code_deps=_NET_CODE_DEPS,
+    version=1,
+)
+def compute_catregion_communities(spark: SparkSession) -> DataFrame:
+    """Label propagation on the dense co-category+region projection groups sellers
+    into market segments — clusters that compete in the same category-region space
+    and can absorb each other's demand. Unlike the co-customer communities (mostly
+    singletons on the sparse graph), these are populated and interpretable.
+    Columns: seller_id, catregion_community_id, catregion_community_size.
+    """
+    gf = build_catregion_graph(spark)
+    communities = gf.labelPropagation(maxIter=5)
+    sizes = communities.groupBy("label").agg(
+        F.count("*").alias("catregion_community_size")
+    )
+    return communities.join(sizes, "label", "left").select(
+        F.col("id").alias("seller_id"),
+        F.col("label").alias("catregion_community_id"),
+        "catregion_community_size",
+    )
+
+
+@step(
+    name="network.catregion_backups",
+    inputs=["outputs/_cache/network_catregion_edges.parquet"],
+    outputs=["outputs/_cache/network_catregion_backups.parquet"],
+    code_deps=_NET_CODE_DEPS,
+    version=1,
+)
+def compute_catregion_backups(spark: SparkSession) -> DataFrame:
+    """For every seller in the projection: how many same-category, same-state
+    substitutes exist (`n_category_substitutes`) and the strongest one (most shared
+    cells) as its deployable backup. This is the real "if X fails, route to Y"
+    lookup the sparse co-customer backup could only give ~7.6% of sellers.
+    Columns: seller_id, n_category_substitutes, catregion_backup_seller_id,
+    catregion_backup_strength.
+    """
+    from pyspark.sql.window import Window
+
+    edges = spark.read.parquet(
+        resolve_path("outputs/_cache/network_catregion_edges.parquet")
+    )
+    counts = edges.groupBy("src").agg(
+        F.countDistinct("dst").alias("n_category_substitutes")
+    ).withColumnRenamed("src", "seller_id")
+    pick_best = Window.partitionBy("src").orderBy(
+        F.col("weight").desc(), F.col("dst")
+    )
+    best = (
+        edges.withColumn("rk", F.row_number().over(pick_best))
+        .filter(F.col("rk") == 1)
+        .select(
+            F.col("src").alias("seller_id"),
+            F.col("dst").alias("catregion_backup_seller_id"),
+            F.col("weight").alias("catregion_backup_strength"),
+        )
+    )
+    return counts.join(best, "seller_id", "left")
+
+
 @step(
     name="network.bfs_backups",
     inputs=[
@@ -649,10 +891,13 @@ def compute_delayed_subgraph_pagerank(spark: SparkSession) -> DataFrame:
         "outputs/_cache/network_communities.parquet",
         "outputs/_cache/network_backup_map.parquet",
         "outputs/_cache/network_two_hop_backups.parquet",
+        "outputs/_cache/network_catregion_centrality.parquet",
+        "outputs/_cache/network_catregion_communities.parquet",
+        "outputs/_cache/network_catregion_backups.parquet",
     ],
     outputs=["outputs/nb3_seller_network_scores.parquet"],
     code_deps=_NET_CODE_DEPS,
-    version=3,
+    version=4,
 )
 def build_seller_network_scores(spark: SparkSession) -> DataFrame:
     """Assemble per-seller network scores from the cached GraphFrame outputs.
@@ -660,7 +905,16 @@ def build_seller_network_scores(spark: SparkSession) -> DataFrame:
     Columns: seller_id, pagerank_score, in_degree, is_isolated,
     cocustomer_centrality, community_id, backup_seller_id, backup_strength,
     n_cocustomer_partners, substitutability_deficit, network_risk_score,
-    two_hop_reach_count, nearest_two_hop_seller.
+    two_hop_reach_count, nearest_two_hop_seller, n_category_substitutes,
+    catregion_backup_seller_id, catregion_backup_strength, catregion_centrality,
+    catregion_community_id, supply_concentration_risk.
+
+    `supply_concentration_risk = 1 / (1 + n_category_substitutes)` is the
+    decision-grade substitutability signal from the DENSE co-category+region
+    projection: high when a seller has few same-category, same-state competitors
+    (a genuine single point of failure), low when many. It replaces the old
+    degree-proxy `substitutability_deficit` as the deficit half of the §6 network
+    axis (the deficit column is retained for the honesty diagnostics only).
 
     `substitutability_deficit = in_degree / (1 + n_cocustomer_partners)` is a
     *degree-adjusted* risk signal: high impact (many customers) discounted by how
@@ -681,6 +935,9 @@ def build_seller_network_scores(spark: SparkSession) -> DataFrame:
     communities = spark.read.parquet(resolve_path("outputs/_cache/network_communities.parquet"))
     backup = spark.read.parquet(resolve_path("outputs/_cache/network_backup_map.parquet"))
     two_hop = spark.read.parquet(resolve_path("outputs/_cache/network_two_hop_backups.parquet"))
+    cat_centrality = spark.read.parquet(resolve_path("outputs/_cache/network_catregion_centrality.parquet"))
+    cat_communities = spark.read.parquet(resolve_path("outputs/_cache/network_catregion_communities.parquet"))
+    cat_backups = spark.read.parquet(resolve_path("outputs/_cache/network_catregion_backups.parquet"))
 
     # Recompute per-seller degree stats (cheap).
     seller_degrees = seller_degree_stats(spark)
@@ -719,6 +976,13 @@ def build_seller_network_scores(spark: SparkSession) -> DataFrame:
         .join(communities.select("seller_id", "community_id"), "seller_id", "left")
         .join(backup, "seller_id", "left")
         .join(two_hop, "seller_id", "left")
+        .join(cat_centrality, "seller_id", "left")
+        .join(
+            cat_communities.select("seller_id", "catregion_community_id"),
+            "seller_id",
+            "left",
+        )
+        .join(cat_backups, "seller_id", "left")
         .fillna(
             {
                 "is_isolated": 0,
@@ -730,11 +994,21 @@ def build_seller_network_scores(spark: SparkSession) -> DataFrame:
                 "n_cocustomer_partners": 0,
                 "community_id": -1,
                 "two_hop_reach_count": 0,
+                "n_category_substitutes": 0,
+                "catregion_backup_strength": 0,
+                "catregion_centrality": 0.0,
+                "catregion_community_id": -1,
             }
         )
         .withColumn(
             "substitutability_deficit",
             F.col("in_degree") / (F.lit(1.0) + F.col("n_cocustomer_partners")),
+        )
+        # Decision-grade substitutability from the DENSE co-category+region graph:
+        # high risk when a seller has few same-category, same-state competitors.
+        .withColumn(
+            "supply_concentration_risk",
+            F.lit(1.0) / (F.lit(1.0) + F.col("n_category_substitutes")),
         )
     )
 

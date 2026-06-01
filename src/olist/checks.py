@@ -291,6 +291,37 @@ def check_two_hop_substitutes() -> CheckResult:
     )
 
 
+def check_catregion_graph() -> CheckResult:
+    """Dense co-category+region substitution projection: builds (state,category)
+    cells, a capped self-join edge set, PageRank centrality, labelPropagation
+    market-segment communities, and a per-seller substitute count / backup —
+    feeding `supply_concentration_risk` into the convergence network axis.
+    """
+    net_src = _src(network)
+    conv_src = _src(convergence)
+    has_cells = "def build_seller_category_cells" in net_src
+    has_edges = "def build_catregion_edges" in net_src
+    has_centrality = "def compute_catregion_centrality" in net_src
+    has_communities = "def compute_catregion_communities" in net_src
+    has_backups = "def compute_catregion_backups" in net_src
+    has_signal = "supply_concentration_risk" in net_src
+    wired = (
+        "supply_concentration_risk" in conv_src
+        and "n_category_substitutes" in conv_src
+    )
+    ok = all(
+        [has_cells, has_edges, has_centrality, has_communities, has_backups,
+         has_signal, wired]
+    )
+    return CheckResult(
+        "Co-category+region substitution graph (dense) feeds the network axis",
+        ok,
+        f"cells={has_cells}, edges={has_edges}, centrality={has_centrality}, "
+        f"communities={has_communities}, backups={has_backups}, "
+        f"signal={has_signal}, wired={wired}",
+    )
+
+
 def check_spark_dl_integration() -> CheckResult:
     src = _src(sentiment)
     has_distributor = "TorchDistributor" in src
@@ -480,6 +511,7 @@ CHECKS: tuple[Callable[[], CheckResult], ...] = (
     check_outlier_treatment,
     check_cocustomer_graph,
     check_two_hop_substitutes,
+    check_catregion_graph,
     check_spark_dl_integration,
     check_applyinpandas,
     check_streaming,

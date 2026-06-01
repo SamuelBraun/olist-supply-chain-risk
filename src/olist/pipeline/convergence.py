@@ -115,7 +115,7 @@ def _scalable_percentile_norm(
     ],
     outputs=["outputs/seller_risk_index.parquet"],
     code_deps=_CONV_CODE_DEPS,
-    version=4,
+    version=5,
 )
 def build_seller_risk_index(spark: SparkSession) -> DataFrame:
     """Inner-join the three per-seller parquets, normalise each risk component to
@@ -136,11 +136,12 @@ def build_seller_risk_index(spark: SparkSession) -> DataFrame:
     dominate the composite.
 
     The network axis is a 50/50 blend of *contagion* (delayed-subgraph
-    PageRank — a late-shipping hub) and *substitutability deficit* (high
-    impact, no backup), each percentile-ranked first. The deficit half is
-    graph-unique and non-degenerate across the whole population, so the network
-    axis no longer collapses to a degree proxy and is no longer zero for the
-    two-thirds of sellers outside the late-shipping subgraph.
+    PageRank — a late-shipping hub) and *supply concentration* (few same-category,
+    same-state substitutes = a single point of failure), each percentile-ranked
+    first. The supply-concentration half comes from the DENSE co-category+region
+    projection (`supply_concentration_risk`), which covers nearly all sellers and
+    measures real substitutability — replacing the old degree-proxy
+    `substitutability_deficit` (retained only for the §5.5 honesty diagnostic).
     """
     demand = spark.read.parquet(resolve_path("outputs/nb1_seller_demand_scores.parquet"))
     sentiment = spark.read.parquet(resolve_path("outputs/nb2_seller_sentiment_scores.parquet"))
@@ -152,6 +153,9 @@ def build_seller_risk_index(spark: SparkSession) -> DataFrame:
                 "pagerank_score",
                 "network_risk_score",
                 "substitutability_deficit",
+                "supply_concentration_risk",
+                "n_category_substitutes",
+                "catregion_backup_seller_id",
                 "backup_seller_id",
                 "backup_strength",
                 "community_id",
@@ -170,12 +174,15 @@ def build_seller_risk_index(spark: SparkSession) -> DataFrame:
     normed = _scalable_percentile_norm(
         normed, "network_risk_score", "contagion_norm"
     )
+    # Deficit half of the network axis is now the DENSE co-category+region
+    # supply-concentration (few same-category, same-state substitutes = high
+    # risk), replacing the old degree-proxy substitutability_deficit.
     normed = _scalable_percentile_norm(
-        normed, "substitutability_deficit", "deficit_norm"
+        normed, "supply_concentration_risk", "supply_norm"
     )
     normed = normed.withColumn(
         "network_norm",
-        0.5 * F.col("contagion_norm") + 0.5 * F.col("deficit_norm"),
+        0.5 * F.col("contagion_norm") + 0.5 * F.col("supply_norm"),
     ).withColumn(
         "risk_score",
         RISK_WEIGHTS["demand"] * F.col("demand_norm")
@@ -195,14 +202,16 @@ def build_seller_risk_index(spark: SparkSession) -> DataFrame:
             .when(F.col("risk_score") > warn_cut, "WARNING")
             .otherwise("SAFE"),
         )
-        # Escalate a non-SAFE seller only when it has NO substitute at all —
-        # neither a direct co-customer backup nor a transitive 2-hop substitute.
-        # The 2-hop term removes false escalations for connected sellers whose
-        # only backup is two hops away (see network.compute_two_hop_backups).
+        # Escalate a non-SAFE seller only when it has NO substitute at all — no
+        # same-category/same-state competitor (the dense, decision-grade test), no
+        # direct co-customer backup, and no 2-hop one. With the co-category graph
+        # this flags genuine single-points-of-failure (no one else sells the
+        # category in the region), not artefacts of co-customer sparsity.
         .withColumn(
             "escalate_no_backup",
             (
                 (F.col("risk_class") != "SAFE")
+                & (F.coalesce(F.col("n_category_substitutes"), F.lit(0)) == 0)
                 & (F.coalesce(F.col("backup_strength"), F.lit(0)) == 0)
                 & (F.coalesce(F.col("two_hop_reach_count"), F.lit(0)) == 0)
             ).cast("int"),
@@ -216,11 +225,14 @@ def build_seller_risk_index(spark: SparkSession) -> DataFrame:
             "sentiment_norm",
             "network_norm",
             "contagion_norm",
-            "deficit_norm",
+            "supply_norm",
             "avg_delay_days",
             "avg_sentiment_score",
             "pagerank_score",
             "substitutability_deficit",
+            "supply_concentration_risk",
+            "n_category_substitutes",
+            "catregion_backup_seller_id",
             "backup_seller_id",
             "backup_strength",
             "two_hop_reach_count",

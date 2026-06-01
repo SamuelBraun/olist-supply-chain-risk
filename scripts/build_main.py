@@ -922,7 +922,7 @@ Both classifiers comfortably clear the 0.90 AUC bar. The two AUCs are now comput
 # ===========================================================================
 md("""## 5. Sub-Analysis 3. Supply-Network Graph
 
-The third and final sub-analysis, same eight substeps. The PySpark primitive on display here is **GraphFrames**. We run the full battery on the bipartite customer↔seller graph (PageRank, connected components, motif-finding, BFS, induced subgraph), then project onto a seller↔seller co-customer graph where the genuinely graph-unique signals live: a substitutability deficit and label-propagation communities the tabular analyses cannot produce.""")
+The third and final sub-analysis, same eight substeps. The PySpark primitive on display here is **GraphFrames**. We run the full battery on the bipartite customer↔seller graph (PageRank, connected components, motif-finding, BFS, induced subgraph), then build two seller↔seller projections: a sparse **co-customer** graph (honest demonstration on one-time-buyer data) and a dense **co-category+region** graph (§5.5.6) that actually answers "who could absorb this seller's demand?" for the whole marketplace. The signals reaching §6 are the co-category supply-concentration and the delayed-subgraph contagion.""")
 
 
 md("""### 5.1 Problem framing
@@ -930,10 +930,10 @@ md("""### 5.1 Problem framing
 **Sub-research question.** *Which sellers are structural single-points-of-failure, where their disappearance would disrupt the most customers, and who could absorb their demand if they failed?*
 
 **Success criteria.**
-- A substitutability deficit per seller: high impact (many customers) with few substitute sellers signals a structural single-point-of-failure. This is the signal that reaches the §6 risk index.
-- A backup seller for every seller (not just the hubs), so the recommendation engine has an "if X fails, route to Y" lookup.
-- Substitution communities: clusters of mutually-substitutable sellers, via label propagation on the projected graph.
-- A delayed-subgraph PageRank isolating sellers central to the late-shipping part of the network, the contagion-risk signal, blended 50/50 with the deficit into the network axis.
+- A real supply-concentration / substitutability signal per seller: few same-category, same-state competitors signals a structural single-point-of-failure. Built on the dense co-category+region graph so it covers nearly all sellers — this is the signal that reaches the §6 risk index.
+- A backup seller for every seller (not just the hubs), so the recommendation engine has an "if X fails, route to Y" lookup — deployable for ~all sellers via the co-category graph, not just the 7.6% in the co-customer projection.
+- Market-segment communities: clusters of mutually-substitutable sellers, via label propagation on the dense projection.
+- A delayed-subgraph PageRank isolating sellers central to the late-shipping part of the network, the contagion-risk signal, blended 50/50 with supply-concentration into the network axis.
 
 **Method-choice rationale.**
 - **GraphFrames over `networkx`.** GraphFrames runs on the JVM, scales horizontally, and survives a 100x scale-up unchanged. `networkx` would be 10x slower at this size and unusable at 1 M vertices.
@@ -1050,8 +1050,23 @@ code('''from olist.pipeline.network import (
     build_cocustomer_edges, compute_cocustomer_centrality,
     compute_substitution_communities, compute_backup_map,
     compute_two_hop_backups, build_seller_network_scores,
+    build_seller_category_cells, build_catregion_edges,
+    compute_catregion_centrality, compute_catregion_communities,
+    compute_catregion_backups, compute_delayed_subgraph_pagerank,
 )
 from olist.pipeline.network import build_vertices as _net_vertices
+
+# Materialise every per-seller graph signal BEFORE the assembler reads them
+# (build_seller_network_scores joins all of these; they must exist on disk first).
+# The dense co-category+region layer is introduced narratively in §5.5.6 below,
+# and the delayed-subgraph contagion in §5.6; we compute (cache) them here so the
+# §5.5.4 degree-proxy assembler reads fresh inputs regardless of cache state.
+build_seller_category_cells(spark)
+build_catregion_edges(spark)
+compute_catregion_centrality(spark)
+compute_catregion_communities(spark)
+compute_catregion_backups(spark)
+compute_delayed_subgraph_pagerank(spark)
 
 cocustomer_edges = build_cocustomer_edges(spark)
 print(f"co-customer edges (>=2 shared, both directions): {cocustomer_edges.count():,}")
@@ -1171,6 +1186,73 @@ print(f"  ...of which have NO direct backup:    {two_hop_only:,}  "
       f"(only these can flip an escalation; on this sparse graph it is ~0)")
 two_hop_backups.orderBy(F.col("two_hop_reach_count").desc()).limit(8).show(truncate=False)
 ''')
+
+
+md("""#### 5.5.6 Co-category + region substitution graph. The dense, decision-grade layer
+
+The co-customer projection above is the honest *limit* of customer-overlap on one-time-buyer data — it can only speak for ~7.6% of sellers. To answer the supply-chain question for the whole marketplace — *"if this seller fails, can anyone else absorb its demand?"* — we re-project onto a relationship that is actually dense: two sellers are linked when they **sell overlapping product categories in the same state**. Most sellers have same-category, same-region competitors, so this graph is dense, and the algorithms on it (label-propagation market segments, competitive PageRank) are non-degenerate — unlike on the sparse co-customer graph.
+
+This is the signal that feeds the §6 network axis. For nearly every seller it yields a real **substitute count** and a deployable **backup** ("route demand to seller Y, same category, same state"), and `supply_concentration_risk = 1/(1+substitutes)` becomes the deficit half of the network axis, replacing the old degree proxy.
+
+Honest framing: the *edges* are a self-join on (state, category) — not graph-unique in themselves. The value is (a) a per-seller substitutability metric and backup for ~all sellers, and (b) community/centrality structure on a graph dense enough for those to mean something. This is a better-*motivated* signal than the bipartite degree proxy; it is a construct-validity improvement, **not** a measured predictive-lift validation (that temporal validation is noted as future work in §7.2).""")
+
+code('''from olist.pipeline.network import (
+    build_seller_category_cells, build_catregion_edges,
+    compute_catregion_centrality, compute_catregion_communities,
+    compute_catregion_backups,
+)
+
+cells = build_seller_category_cells(spark)
+catregion_edges = build_catregion_edges(spark)
+catregion_centrality = compute_catregion_centrality(spark)
+catregion_communities = compute_catregion_communities(spark)
+catregion_backups = compute_catregion_backups(spark)
+
+# BIG-DATA-SAFETY-ESCAPE: SMALL_SUMMARY_COLLECT — scalar coverage counts
+n_in_catregion = catregion_centrality.count()
+print(f"co-category+region projection coverage: {n_in_catregion:,} / {n_sellers_total:,} "
+      f"sellers ({100.0*n_in_catregion/n_sellers_total:.1f}%) — vs the 7.6% co-customer projection")
+n_real_communities = (catregion_communities
+    .groupBy("catregion_community_id").count().filter(F.col("count") >= 3).count())
+print(f"market-segment communities with >=3 sellers: {n_real_communities:,} "
+      "(vs mostly singletons on the co-customer graph)")
+''')
+
+md("""**The Spark code behind the dense projection** (edges with a partitioned top-K-per-cell cap for scalability, then PageRank + label-propagation):""")
+
+code('''print(inspect.getsource(build_catregion_edges))
+print(inspect.getsource(compute_catregion_backups))
+''')
+
+md("""The per-seller substitutability that reaches the risk index: how many same-category, same-state competitors each seller has, and its strongest backup. Compare the coverage to the co-customer backup map — this one speaks for nearly the whole marketplace.""")
+
+code('''from olist.pipeline.network import build_seller_network_scores
+
+net_scores2 = build_seller_network_scores(spark)
+# BIG-DATA-SAFETY-ESCAPE: SMALL_SUMMARY_COLLECT — scalar counts
+n_with_sub = net_scores2.filter(F.col("n_category_substitutes") > 0).count()
+n_total = net_scores2.count()
+print(f"sellers with >=1 same-category/region substitute: {n_with_sub:,} / {n_total:,} "
+      f"({100.0*n_with_sub/n_total:.1f}%)")
+print("supply_concentration_risk = 1 / (1 + n_category_substitutes)  -> feeds the §6 network axis")
+# BIG-DATA-SAFETY-ESCAPE: PLOTLY_STATIC_VIZ — top-12 most-concentrated sellers
+conc_pd = (
+    net_scores2.select("seller_id", "n_category_substitutes",
+                       "supply_concentration_risk", "catregion_centrality")
+    .orderBy(F.col("supply_concentration_risk").desc(), F.col("catregion_centrality").desc())
+    .limit(12)
+    .toPandas()
+)
+conc_pd["seller_id"] = conc_pd["seller_id"].str.slice(0, 10) + "…"
+viz.styled_topn_table(
+    conc_pd,
+    bar_cols=["supply_concentration_risk"],
+    fmt={"supply_concentration_risk": "{:.3f}", "catregion_centrality": "{:.4f}"},
+    title="Most supply-concentrated sellers (fewest same-category/region substitutes)",
+)
+''')
+
+md("""These are the sellers the marketplace would struggle to replace — high `supply_concentration_risk` means few or no same-category competitors in their state. They are exactly the sellers the §6 index escalates when they also drift into the WARNING/CRITICAL bands, and the recommendation is concrete: dual-source that category in that region before the seller becomes a problem.""")
 
 
 md("""### 5.6 Modelling. BFS backups + delayed-subgraph PageRank""")
@@ -1306,7 +1388,7 @@ md("""Concentration at hop count 1 means hubs are well-substituted (every top se
 
 md("""### 5.8 Interpretation. Per-seller scores + deployment view
 
-The deployable parquet `outputs/nb3_seller_network_scores.parquet` carries `pagerank_score`, `in_degree`, `is_isolated`, `cocustomer_centrality`, `community_id`, `backup_seller_id`, `backup_strength`, `n_cocustomer_partners`, `substitutability_deficit`, and `network_risk_score` (delayed-subgraph PageRank). The deficit and the delayed-subgraph contagion are the two halves the §6 network axis blends.""")
+The deployable parquet `outputs/nb3_seller_network_scores.parquet` carries the co-customer signals (`pagerank_score`, `cocustomer_centrality`, `substitutability_deficit`, `backup_seller_id`, `two_hop_reach_count`) plus the dense co-category+region layer (`n_category_substitutes`, `catregion_backup_seller_id`, `catregion_centrality`, `supply_concentration_risk`) and `network_risk_score` (delayed-subgraph contagion PageRank). The two halves the §6 network axis blends are **`supply_concentration_risk`** (real substitutability, dense, for ~all sellers) and the delayed-subgraph contagion; the old degree-proxy `substitutability_deficit` is retained only for the §5.5.4 honesty diagnostic.""")
 
 code('''seller_network_scores = build_seller_network_scores(spark)
 print(f"seller_network_scores rows: {seller_network_scores.count():,}")
@@ -1342,7 +1424,7 @@ md("""These ten are the contagion hubs, structurally central to the part of the 
 
 md("""### Key takeaways
 
-Bipartite PageRank tracks raw in-degree at r≈1.0, and we say so: it is a degree proxy, kept only as a sanity ranking. The graph-unique value comes from the seller↔seller projection. The headline signal is `substitutability_deficit` (high impact with few substitutes). Its Pearson correlation with in-degree is mild (~0.38), but its Spearman (rank) correlation is high (~0.89), so we frame it honestly: by rank order it is largely a degree-adjusted refinement of customer count rather than a fully orthogonal axis. We keep it because the refinement encodes the "few substitutes" structure a plain `groupBy` cannot, and it feeds the §6 network axis blended 50/50 with delayed-subgraph contagion. The motif map is operationalised into a per-seller `backup_seller_id` + `backup_strength` lookup, extended with a transitive 2-hop substitute search (§5.5.5); a non-SAFE seller with no substitute at all — neither a direct co-customer backup nor a 2-hop one — is flagged `escalate_no_backup`. Label-propagation substitution communities replace the dead isolation finding by surfacing clusters that can absorb each other's demand, and delayed-subgraph PageRank flags the contagion-risk tail for §7. The honest limitation: edges are item-count weighted, not revenue weighted, so a value-weighted projection could shift which sellers count as structurally critical.""")
+Bipartite PageRank tracks raw in-degree at r≈1.0, and we say so: it is a degree proxy, kept only as a sanity ranking. The graph-unique value comes from the seller↔seller projection. The headline signal is `substitutability_deficit` (high impact with few substitutes). Its Pearson correlation with in-degree is mild (~0.38), but its Spearman (rank) correlation is high (~0.89), so we frame it honestly: by rank order it is largely a degree-adjusted refinement of customer count rather than a fully orthogonal axis. By rank it largely follows degree, so we **do not** use it in the index; it stays as the honesty diagnostic. The signal that actually feeds the §6 network axis is the dense **co-category+region** layer (§5.5.6): `supply_concentration_risk` (few same-category, same-state substitutes) blended 50/50 with the delayed-subgraph contagion PageRank. That layer also gives a deployable `catregion_backup_seller_id` for ~all sellers, and a non-SAFE seller with **no** substitute anywhere — no same-category/region competitor, no direct co-customer backup, no 2-hop one — is flagged `escalate_no_backup` (a genuine single-point-of-failure, not a co-customer-sparsity artefact). Label-propagation on the dense graph yields real market segments. The honest limitations: same-category ≠ perfect substitute (ignores price/quality tier), edges are item-count weighted not revenue weighted, and this is a construct-validity improvement, not a measured predictive-lift validation (§7.2).""")
 
 
 # ===========================================================================
