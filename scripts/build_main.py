@@ -92,7 +92,7 @@ To answer the operational question above, we decompose it into three independent
 |---|---|---|---|
 | 1 | **Demand pressure & delivery risk.** Is this seller's order volume rising or falling, and are they shipping on time? | PySpark MLlib regressors (GBT vs RandomForest) under 3-fold CV on weekly volume features | `forecast_uplift_pct`, `avg_delay_days` |
 | 2 | **Customer sentiment trend.** Are reviews getting more positive or negative for this seller, and does sentiment lead volume? | TF-IDF + Logistic Regression (Spark ML Pipeline) + PyTorch LSTM, plus 6-week rolling Window aggregation | `avg_sentiment_score`, `sentiment_trend_6wk` |
-| 3 | **Network criticality & substitutability.** Is this seller a structural single-point-of-failure whose demand no one else could absorb? | GraphFrames on the bipartite graph (PageRank, CC, motif, BFS, delayed subgraph) + a seller↔seller co-customer projection (centrality, label-propagation communities, backup map) | `substitutability_deficit`, `backup_seller_id`, `network_risk_score` |
+| 3 | **Network criticality & substitutability.** Is this seller a structural single-point-of-failure whose demand no one else could absorb? | GraphFrames on the bipartite graph (PageRank, CC, motif, BFS, delayed subgraph), a sparse co-customer projection (the honesty diagnostic), and a dense co-category+region projection (centrality, label-propagation communities, backup map) | `supply_concentration_risk`, `catregion_backup_seller_id`, `network_risk_score` |
 
 ### 1.3 Methodology, why PySpark
 
@@ -285,7 +285,7 @@ viz.eda_quantile_table(stats)
 
 md("""Three things from the EDA:
 
-- Price is heavy-tailed: p75 is ~134 BRL but p95 is far higher, so a small fraction of high-value orders dominate revenue. The forecast must handle this spread without collapsing to a mean prediction.
+- Price is heavy-tailed: p75 is ~130 BRL but p95 is more than double that, so a small fraction of high-value orders dominate revenue. The forecast must handle this spread without collapsing to a mean prediction.
 - Most deliveries arrive early. Delay quantiles are mostly negative (`order_delivered_customer_date < order_estimated_delivery_date`); only the top quartile is meaningfully late, so `delay_risk_flag` fires at `> 3` days to isolate the truly-late tail.
 - The marketplace is wide and not too deep: ~3,000 distinct sellers, ~33,000 products, ~96,000 delivered orders. This is the "small N, many sellers" regime where global features (lagged volume, calendar) dominate and per-seller idiosyncratic forecasting would overfit.""")
 
@@ -523,7 +523,7 @@ viz.feature_importance_bar(
 )
 ''')
 
-md("""The lagged-volume features (`rolling_4w_mean`, `lag_1`, `lag_4`) dominate, so the model's signal is mostly "what happened recently for this seller." Calendar features (`month`, `is_q4`) contribute the rest but are secondary. This matches the weekly-pattern-plus-recent-trend intuition operations teams already use; the model augments that intuition rather than replacing it.""")
+md("""Recent-demand features carry the model. The time-weighted momentum term `decay_wtd_8w` and `lag_1` are the two strongest predictors (each around 0.27 of the total importance), with `rolling_4w_mean` (~0.21) and `lag_4` (~0.13) close behind — so the signal is overwhelmingly "what this seller has been doing lately." The retail-calendar flag `is_black_friday` is the most important non-autoregressive feature (~0.04), enough to register the November spike that §3.7.3 flags as otherwise hard to anticipate; the per-seller covariates (`n_categories`, `avg_price`) sit just below it. That `decay_wtd_8w` leads is the result that matters: the geometrically-decayed momentum term is exactly the feature that lifts the model past the naive baselines in §3.6, confirming the gain came from the feature set rather than the choice of estimator.""")
 
 
 md("""#### 3.7.3 Residual diagnostics""")
@@ -692,7 +692,7 @@ md("""### 4.3 Cleaning. Neutrals dropped, NULL-text handled
 
 Two cleaning decisions, both already audited globally in §2.5:
 
-1. **Drop neutral scores (`review_score == 3`).** ~14k of ~100k reviews. A neutral score has no clear positive/negative supervisory signal; including them would bias both classes toward the boundary and depress AUC.
+1. **Drop neutral scores (`review_score == 3`).** ~13k of ~104k reviews. A neutral score has no clear positive/negative supervisory signal; including them would bias both classes toward the boundary and depress AUC.
 2. **Inside the NLP pipeline, drop rows where `review_comment_message IS NULL`.** ~58% of reviews have no text. The Tokenizer cannot operate on NULL; the LogReg + LSTM both train on the comment-bearing subset.
 
 These two choices are why the LSTM and LogReg train on roughly 43k rows even though the labelled count is ~103k.""")
@@ -1025,7 +1025,7 @@ print(f"edges total: {edges.count():,}")
 edges.groupBy("edge_type").agg(F.count("*").alias("n")).orderBy("edge_type").show()
 ''')
 
-md("""The graph is roughly sellers plus 95k unique customers with ~200k bidirectional edges. The customer side dominates the vertex count by about 30x. PageRank's behaviour on this kind of bipartite-ish graph depends on flow passing both ways through the customer "super-nodes," which is why bidirectional edges are required.""")
+md("""The graph is roughly sellers plus ~93k unique customers with ~194k bidirectional edges. The customer side dominates the vertex count by about 30x. PageRank's behaviour on this kind of bipartite-ish graph depends on flow passing both ways through the customer "super-nodes," which is why bidirectional edges are required.""")
 
 
 md("""### 5.3 Cleaning. Geolocation aggregation
@@ -1487,7 +1487,7 @@ md("""These ten are the contagion hubs, structurally central to the part of the 
 
 md("""### Key takeaways
 
-Bipartite PageRank tracks raw in-degree at r≈1.0, and we say so: it is a degree proxy, kept only as a sanity ranking. The graph-unique value comes from the seller↔seller projection. The headline signal is `substitutability_deficit` (high impact with few substitutes). Its Pearson correlation with in-degree is mild (~0.38), but its Spearman (rank) correlation is high (~0.89), so we frame it honestly: by rank order it is largely a degree-adjusted refinement of customer count rather than a fully orthogonal axis. By rank it largely follows degree, so we **do not** use it in the index; it stays as the honesty diagnostic. The signal that actually feeds the §6 network axis is the dense **co-category+region** layer (§5.5.6): `supply_concentration_risk` (few same-category, same-state substitutes) blended 50/50 with the delayed-subgraph contagion PageRank. That layer also gives a deployable `catregion_backup_seller_id` for ~all sellers, and a non-SAFE seller with **no** substitute anywhere — no same-category/region competitor, no direct co-customer backup, no 2-hop one — is flagged `escalate_no_backup` (a genuine single-point-of-failure, not a co-customer-sparsity artefact). Label-propagation on the dense graph yields real market segments. The honest limitations: same-category ≠ perfect substitute (ignores price/quality tier), edges are item-count weighted not revenue weighted, and this is a construct-validity improvement, not a measured predictive-lift validation (§7.2).""")
+Bipartite PageRank tracks raw in-degree at r≈1.0, and we say so: it is a degree proxy, kept only as a sanity ranking. The graph-unique value comes from the seller↔seller projections, and we are careful about which one earns a place in the index. The co-customer `substitutability_deficit` was the obvious candidate, but it does not survive its own honesty check: its Pearson correlation with in-degree is mild (~0.38) while its Spearman (rank) correlation is high (~0.89), and since escalation acts on rank order, by rank it largely follows customer count. So we **do not** use it in the index; it stays only as that diagnostic. The signal that actually feeds the §6 network axis is the dense **co-category+region** layer (§5.5.6): `supply_concentration_risk` (few same-category, same-state substitutes — and `corr` with in-degree of −0.18, genuinely not a degree proxy) blended 50/50 with the delayed-subgraph contagion PageRank. That layer also gives a deployable `catregion_backup_seller_id` for ~all sellers, and a non-SAFE seller with **no** substitute anywhere — no same-category/region competitor, no direct co-customer backup, no 2-hop one — is flagged `escalate_no_backup` (a genuine single-point-of-failure, not a co-customer-sparsity artefact). Label-propagation on the dense graph yields real market segments. The honest limitations: same-category ≠ perfect substitute (ignores price/quality tier), edges are item-count weighted not revenue weighted, and this is a construct-validity improvement, not a measured predictive-lift validation (§7.2).""")
 
 
 # ===========================================================================
