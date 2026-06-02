@@ -13,8 +13,7 @@ The complete deliverable is one notebook: [`notebooks/main.ipynb`](notebooks/mai
 ├── CLAUDE.md                       ← AI-assistant contract (do not delete)
 ├── README.md                       ← you are here
 ├── notebooks/
-│   ├── main.ipynb                  ← THE comprehensive deliverable (executed, all outputs)
-│   └── _archive/                   ← previous 4-notebook version (kept for git history)
+│   └── main.ipynb                  ← THE comprehensive deliverable (executed, all outputs)
 ├── src/olist/                      ← all transformation logic — single source of truth
 │   ├── spark_session.py            ← SparkSession factory (driver memory 6g, GraphFrames jar)
 │   ├── schemas.py                  ← explicit StructType per CSV
@@ -23,13 +22,14 @@ The complete deliverable is one notebook: [`notebooks/main.ipynb`](notebooks/mai
 │   ├── cache.py                    ← @step decorator + fingerprint-based parquet cache
 │   ├── safety.py                   ← registry of big-data-safety escape IDs
 │   ├── checks.py                   ← programmatic rubric-compliance assertions
-│   ├── viz.py                      ← 15 reusable matplotlib + pandas-styler helpers
+│   ├── viz.py                      ← reusable Plotly + pandas-styler helpers (Kaleido PNG fallback)
 │   ├── data_foundation.py          ← schema metadata + shared-key + temporal helpers
 │   └── pipeline/
 │       ├── demand.py               ← main §3 — demand forecasting
 │       ├── sentiment.py            ← main §4 — sentiment analysis
 │       ├── network.py              ← main §5 — supply-network graph
-│       └── convergence.py          ← main §6 — Seller Risk Index + archetypes
+│       ├── convergence.py          ← main §6 — Seller Risk Index + archetypes
+│       └── streaming.py            ← main §8 — Structured Streaming (bonus)
 ├── data/                           ← 9 source CSVs (gitignored)
 ├── outputs/                        ← 6 committed parquet artefacts + .cache_manifest.json
 │   └── _cache/                     ← gitignored intermediate parquets + GraphX checkpoints
@@ -37,8 +37,10 @@ The complete deliverable is one notebook: [`notebooks/main.ipynb`](notebooks/mai
 ├── scripts/
 │   ├── build_main.py               ← regenerates notebooks/main.ipynb from cell definitions
 │   ├── assert_notebook_outputs.py  ← CI-style "every cell has output" check
-│   ├── diff_parquets.py            ← numerical-equivalence guard for refactor PRs
-│   └── _archive/                   ← previous 4-notebook build scripts
+│   └── diff_parquets.py            ← numerical-equivalence guard for refactor PRs
+├── presentation/
+│   ├── presentation_v2.html        ← management deck (source for presentation.pdf)
+│   └── assets/                     ← logos, background, chart images
 ├── submission/build_zip.sh         ← builds the Moodle zip
 ├── run.sh                          ← one-shot: re-execute main.ipynb end-to-end
 └── requirements.txt                ← pinned Python deps
@@ -92,7 +94,7 @@ Re-executes `notebooks/main.ipynb`, asserts every code cell has visible output, 
 
 - All Spark code must be safe at big-data scale (no `collect`/`toPandas` on large DFs, no `orderBy` without `limit`, broadcast small lookups, cache hot DFs once).
 - Every notebook code cell has a markdown cell above it explaining what it does.
-- Every non-Spark library use (PyTorch LSTM, matplotlib, sklearn) requires a markdown justification cell + a `# BIG-DATA-SAFETY-ESCAPE: <ID>` annotation + an entry in `docs/big_data_safety_log.md`.
+- Every non-Spark library use (PyTorch LSTM, Plotly, pandas) requires a markdown justification cell + a `# BIG-DATA-SAFETY-ESCAPE: <ID>` annotation + an entry in `docs/big_data_safety_log.md`.
 - Logic lives in `src/olist/`; the notebook is a report surface — function changes happen in `src/`, not in cells.
 - After any change, regenerate the notebook with `.venv/bin/python scripts/build_main.py` and re-execute it with `./run.sh`.
 

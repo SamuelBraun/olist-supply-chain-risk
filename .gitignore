@@ -36,6 +36,14 @@ venv/
 .DS_Store
 .Rhistory
 
+# Presentation build artefacts (the graded deliverable is presentation.pdf;
+# the working HTML/PPTX scratch and rendered slides are not version-controlled)
+*.pptx
+~$*
+Building PPT/
+presentation/_slide_renders/
+notebooks/*.pdf
+
 # Local env overrides
 .env
 .env.local
