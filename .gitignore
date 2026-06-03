@@ -1,6 +1,7 @@
-# This repository tracks ONLY the final code submission folder.
-# Everything else (working src/, notebooks/, presentation/, docs/, etc.)
-# is kept on local disk but intentionally untracked.
+# This repository tracks ONLY the final code submission folder plus the
+# management presentation PDF. Everything else (working src/, notebooks/,
+# presentation sources, docs/, etc.) is kept on local disk but untracked.
 /*
 !/.gitignore
 !/code_submission/
+!/BDA_current_draft.pdf

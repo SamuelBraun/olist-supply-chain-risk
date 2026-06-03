@@ -857,6 +857,10 @@ def compute_bfs_backups(spark: SparkSession) -> DataFrame:
 def compute_delayed_subgraph_pagerank(spark: SparkSession) -> DataFrame:
     # Induced subgraph on slow edges (avg_delay > 5d), then PageRank again.
     # The high-ranked sellers here are contagion hubs for late shipping.
+    # The 5-day cut is a business-judgement threshold for "materially late"
+    # (a delivery running roughly a business week past its estimate), not a
+    # fitted value: it isolates clearly-late edges from ordinary courier
+    # variance rather than optimising any downstream metric.
     from graphframes import GraphFrame
 
     vertices = spark.read.parquet(resolve_path("outputs/_cache/network_vertices.parquet"))

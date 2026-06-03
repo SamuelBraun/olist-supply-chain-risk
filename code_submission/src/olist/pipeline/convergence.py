@@ -48,6 +48,12 @@ from ..safety import (  # noqa: F401 — referenced by annotation comments
 _CONV_CODE_DEPS = ["src/olist/pipeline/convergence.py"]
 
 RISK_WEIGHTS = {"demand": 0.35, "sentiment": 0.35, "network": 0.30}
+# These weights are a business judgement fixed in advance, NOT fitted to an
+# outcome label (none exists in the data — validating the index against
+# realised churn/failure is logged as future work). Demand and sentiment are
+# weighted equally as the two direct seller-health signals; the network axis
+# is slightly lower as a structural modifier. No sensitivity analysis has been
+# run, so treat the exact 0.35/0.35/0.30 split as a prior, not a tuned value.
 # Percentile cut-points on the composite risk_score (fraction of population).
 RISK_CRITICAL_PCTL = 0.99  # top 1% → CRITICAL
 RISK_WARNING_PCTL = 0.95   # next 4% (>0.95, ≤0.99) → WARNING; ≤0.95 → SAFE
@@ -385,6 +391,12 @@ def risk_archetypes(risk: DataFrame, k: int = 4, seed: int = KMEANS_SEED):
     def _label_for(centroid):
         idx = int(centroid.argmax())
         component = components[idx]
+        # "low-risk" when even the largest centroid axis is below 0.30 on the
+        # [0,1] percentile-normalised scale — i.e. the cluster is not elevated
+        # on ANY of the three signals. 0.30 is a low-but-non-trivial cut chosen
+        # so the bulk of the marketplace (well below the risk bands) is not
+        # given a misleading "driven-by-X" label; the three named archetypes
+        # are reserved for clusters that genuinely peak on an axis.
         if max(centroid) < 0.30:
             return "low-risk"
         if component == "demand_norm":
