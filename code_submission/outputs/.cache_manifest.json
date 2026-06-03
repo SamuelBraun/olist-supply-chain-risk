@@ -1,0 +1,274 @@
+{
+  "entries": {
+    "convergence.kmeans_elbow": {
+      "fingerprint": "0acf3d05ff60c9be9221028ac69f9eb1c94f74b3267f67b4b3776d2f3bb0016a",
+      "outputs": [
+        "outputs/nb6_kmeans_elbow.parquet"
+      ],
+      "version": 1,
+      "written_at": "2026-06-02T00:33:58"
+    },
+    "convergence.seller_risk_index": {
+      "fingerprint": "3ef0633b9e334824d865a740cd0042e6d48f6a41596d7cd6108b3d0a56fc3458",
+      "outputs": [
+        "outputs/seller_risk_index.parquet"
+      ],
+      "version": 5,
+      "written_at": "2026-06-02T00:33:53"
+    },
+    "demand.fit_and_score": {
+      "fingerprint": "041cc264012d49fd53a3d2560ad986d31436f6c20da20061f11b1e1c66baa309",
+      "outputs": [
+        "outputs/_cache/demand_predictions.parquet",
+        "outputs/_cache/demand_metrics.parquet",
+        "outputs/_cache/demand_feature_importances.parquet",
+        "outputs/nb1_seller_demand_scores.parquet"
+      ],
+      "version": 5,
+      "written_at": "2026-06-02T00:03:22"
+    },
+    "demand.geo_centroids": {
+      "fingerprint": "045373662ab66707fde1733be0df0ecc2d6274636677f840dbc3c8bebbe104c8",
+      "outputs": [
+        "outputs/geo_centroids.parquet"
+      ],
+      "version": 1,
+      "written_at": "2026-04-24T22:24:08"
+    },
+    "demand.order_lines": {
+      "fingerprint": "1789d423450f4e1dffb3db6e098f0ad6942ddf8d445e771613736650002b7702",
+      "outputs": [
+        "outputs/_cache/demand_order_lines.parquet"
+      ],
+      "version": 1,
+      "written_at": "2026-06-01T23:24:42"
+    },
+    "demand.regional_forecast": {
+      "fingerprint": "9905072da2de01ff90e6bf0a7f301651a20a3b68fcef75a5ce8f47eec0243cd8",
+      "outputs": [
+        "outputs/nb1_regional_demand_forecast.parquet",
+        "outputs/_cache/demand_regional_metrics.parquet"
+      ],
+      "version": 1,
+      "written_at": "2026-06-02T00:21:03"
+    },
+    "demand.regional_weekly_volume": {
+      "fingerprint": "52f7d313dbdbfd4647618d8b5ab0e58ebbabb0d7a96dc3c88c87fcc66ab51a2a",
+      "outputs": [
+        "outputs/_cache/demand_regional_weekly_volume.parquet"
+      ],
+      "version": 1,
+      "written_at": "2026-06-02T00:03:28"
+    },
+    "demand.seller_covariates": {
+      "fingerprint": "52f7d313dbdbfd4647618d8b5ab0e58ebbabb0d7a96dc3c88c87fcc66ab51a2a",
+      "outputs": [
+        "outputs/_cache/demand_seller_covariates.parquet"
+      ],
+      "version": 1,
+      "written_at": "2026-06-01T23:24:50"
+    },
+    "demand.weekly_order_volume": {
+      "fingerprint": "52f7d313dbdbfd4647618d8b5ab0e58ebbabb0d7a96dc3c88c87fcc66ab51a2a",
+      "outputs": [
+        "outputs/nb1_weekly_order_volume.parquet"
+      ],
+      "version": 1,
+      "written_at": "2026-06-01T23:24:49"
+    },
+    "network.backup_map": {
+      "fingerprint": "85b2b8380bb736cb5a11b226d17aec8f06b67044010c5673f8b449be79647783",
+      "outputs": [
+        "outputs/_cache/network_backup_map.parquet"
+      ],
+      "version": 1,
+      "written_at": "2026-06-01T22:42:27"
+    },
+    "network.bfs_backups": {
+      "fingerprint": "652cfd7ce9cd275574c62c624f7132583e5d0ff2f4ae4b7c700570abff30694c",
+      "outputs": [
+        "outputs/_cache/network_bfs_backups.parquet"
+      ],
+      "version": 1,
+      "written_at": "2026-06-01T22:47:59"
+    },
+    "network.catregion_backups": {
+      "fingerprint": "bb12ed96c06e3ea386881f5faf21525a23a13469366ed18bfe8722c4d0cac946",
+      "outputs": [
+        "outputs/_cache/network_catregion_backups.parquet"
+      ],
+      "version": 1,
+      "written_at": "2026-06-01T22:47:40"
+    },
+    "network.catregion_centrality": {
+      "fingerprint": "bb12ed96c06e3ea386881f5faf21525a23a13469366ed18bfe8722c4d0cac946",
+      "outputs": [
+        "outputs/_cache/network_catregion_centrality.parquet"
+      ],
+      "version": 1,
+      "written_at": "2026-06-01T22:47:35"
+    },
+    "network.catregion_communities": {
+      "fingerprint": "bb12ed96c06e3ea386881f5faf21525a23a13469366ed18bfe8722c4d0cac946",
+      "outputs": [
+        "outputs/_cache/network_catregion_communities.parquet"
+      ],
+      "version": 1,
+      "written_at": "2026-06-01T22:47:39"
+    },
+    "network.catregion_edges": {
+      "fingerprint": "539fdd44240057cb5389da6296a42e5e2b88951d6062e7487f54285e2949561f",
+      "outputs": [
+        "outputs/_cache/network_catregion_edges.parquet"
+      ],
+      "version": 1,
+      "written_at": "2026-06-01T22:47:30"
+    },
+    "network.cocustomer_centrality": {
+      "fingerprint": "1617980d5452eb55e321eb7e5d3aef494dfe29d74559929679665e9a801ed213",
+      "outputs": [
+        "outputs/_cache/network_cocustomer_centrality.parquet"
+      ],
+      "version": 1,
+      "written_at": "2026-06-01T22:42:25"
+    },
+    "network.cocustomer_edges": {
+      "fingerprint": "85b2b8380bb736cb5a11b226d17aec8f06b67044010c5673f8b449be79647783",
+      "outputs": [
+        "outputs/_cache/network_cocustomer_edges.parquet"
+      ],
+      "version": 1,
+      "written_at": "2026-06-01T22:42:22"
+    },
+    "network.communities": {
+      "fingerprint": "1617980d5452eb55e321eb7e5d3aef494dfe29d74559929679665e9a801ed213",
+      "outputs": [
+        "outputs/_cache/network_communities.parquet"
+      ],
+      "version": 1,
+      "written_at": "2026-06-01T22:42:26"
+    },
+    "network.connected_components": {
+      "fingerprint": "9c483a27e8efddde14c21e6784f7b9e897b9b0f407b6c34c7f43bf06a58b9f79",
+      "outputs": [
+        "outputs/_cache/network_connected_components.parquet"
+      ],
+      "version": 1,
+      "written_at": "2026-06-01T22:42:21"
+    },
+    "network.delayed_pagerank": {
+      "fingerprint": "9c483a27e8efddde14c21e6784f7b9e897b9b0f407b6c34c7f43bf06a58b9f79",
+      "outputs": [
+        "outputs/_cache/network_delayed_pagerank.parquet"
+      ],
+      "version": 1,
+      "written_at": "2026-06-01T22:47:42"
+    },
+    "network.edges": {
+      "fingerprint": "cdfb205f08d6967d004df43cac7a818c22dbb0c34b7db6bf854f84567f412b15",
+      "outputs": [
+        "outputs/_cache/network_edges.parquet"
+      ],
+      "version": 1,
+      "written_at": "2026-06-01T22:42:02"
+    },
+    "network.motifs_shared_customers": {
+      "fingerprint": "9c483a27e8efddde14c21e6784f7b9e897b9b0f407b6c34c7f43bf06a58b9f79",
+      "outputs": [
+        "outputs/_cache/network_motifs.parquet"
+      ],
+      "version": 1,
+      "written_at": "2026-06-01T22:42:22"
+    },
+    "network.order_lines": {
+      "fingerprint": "35a88882ef5765d74169578b88511b9960924206cfd29b2f111417f615b52d4c",
+      "outputs": [
+        "outputs/_cache/network_order_lines.parquet"
+      ],
+      "version": 1,
+      "written_at": "2026-06-01T22:42:00"
+    },
+    "network.pagerank": {
+      "fingerprint": "9c483a27e8efddde14c21e6784f7b9e897b9b0f407b6c34c7f43bf06a58b9f79",
+      "outputs": [
+        "outputs/_cache/network_pagerank.parquet"
+      ],
+      "version": 1,
+      "written_at": "2026-06-01T22:42:13"
+    },
+    "network.seller_category_cells": {
+      "fingerprint": "3a4fc340e805958a09111710b3d78cf15f8dc3daeba250c29071c94b509bfa24",
+      "outputs": [
+        "outputs/_cache/network_seller_category.parquet"
+      ],
+      "version": 1,
+      "written_at": "2026-06-01T22:47:29"
+    },
+    "network.seller_scores": {
+      "fingerprint": "6938e76b9fc9899c34c01d359db831d9bff90d4e0798bd8cfdbd70dc8b922780",
+      "outputs": [
+        "outputs/nb3_seller_network_scores.parquet"
+      ],
+      "version": 4,
+      "written_at": "2026-06-01T22:47:44"
+    },
+    "network.two_hop_backups": {
+      "fingerprint": "0cb4934883305a9764d185c029bc35e0ea304e6464c1b985297f29a55e797caa",
+      "outputs": [
+        "outputs/_cache/network_two_hop_backups.parquet"
+      ],
+      "version": 2,
+      "written_at": "2026-06-01T22:42:27"
+    },
+    "network.vertices": {
+      "fingerprint": "cdfb205f08d6967d004df43cac7a818c22dbb0c34b7db6bf854f84567f412b15",
+      "outputs": [
+        "outputs/_cache/network_vertices.parquet"
+      ],
+      "version": 1,
+      "written_at": "2026-06-01T22:42:01"
+    },
+    "sentiment.lead_indicator_lags": {
+      "fingerprint": "49021bb916e224fa24309e299dcdd98276ff4b726befe186af26e70675fa2cae",
+      "outputs": [
+        "outputs/_cache/sentiment_lead_lags.parquet"
+      ],
+      "version": 1,
+      "written_at": "2026-06-02T00:33:31"
+    },
+    "sentiment.lstm_metrics": {
+      "fingerprint": "9841eabb23bcb81f2bb6c046b65867616d2ec3da2275ebc4c294bf10ad58acfe",
+      "outputs": [
+        "outputs/_cache/sentiment_lstm_metrics.parquet"
+      ],
+      "version": 2,
+      "written_at": "2026-06-02T00:33:14"
+    },
+    "sentiment.negative_review_topics": {
+      "fingerprint": "34ec0b7c41edae8d9ee0619562df918f917f07b6a235cb936556c47b573acf73",
+      "outputs": [
+        "outputs/_cache/nb2_neg_topic_summary.parquet",
+        "outputs/nb2_seller_failure_modes.parquet"
+      ],
+      "version": 3,
+      "written_at": "2026-06-02T00:33:37"
+    },
+    "sentiment.reviews_with_seller": {
+      "fingerprint": "cb396572fb4e55bda8e6312ca34242f4028e396deeb648179317eaeeb49f1e96",
+      "outputs": [
+        "outputs/_cache/sentiment_reviews_with_seller.parquet"
+      ],
+      "version": 1,
+      "written_at": "2026-06-02T00:31:50"
+    },
+    "sentiment.seller_scores": {
+      "fingerprint": "8766c22ef67f2188f205a55e4c8ae59a3f57d688cb49cf08f38982db2164aa02",
+      "outputs": [
+        "outputs/nb2_seller_sentiment_scores.parquet"
+      ],
+      "version": 1,
+      "written_at": "2026-06-02T00:33:38"
+    }
+  },
+  "version": 1
+}
