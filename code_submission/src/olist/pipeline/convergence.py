@@ -292,6 +292,61 @@ RISK_ARCHETYPE_LABELS = {
 }
 
 
+#: Short, management-facing action label per archetype. Surfaced as the
+#: `recommended_action` column on the §6.5 watchlist and mirrored on the
+#: presentation's watchlist slide — the archetype typology (§6.3) drives the
+#: *kind* of intervention each flagged seller needs.
+ARCHETYPE_ACTIONS = {
+    "delay-driven":     "Logistics audit",
+    "sentiment-driven": "Account-manager call",
+    "centrality-driven":"Dual-source + watchlist",
+    "low-risk":         "Routine monitoring",
+}
+
+
+def recommend_action(archetype: str, escalate_no_backup: bool = False) -> str:
+    """Map a seller's risk archetype to a single management-facing action.
+
+    A seller flagged ``escalate_no_backup`` (non-SAFE with no substitute
+    anywhere — neither a co-customer/2-hop backup nor a same-category one,
+    see §5.5/§6) is escalated regardless of archetype: a single point of
+    failure is the first thing to fix. Otherwise the action follows the
+    archetype typology of §6.3.
+    """
+    if escalate_no_backup:
+        return "Escalate — no backup"
+    return ARCHETYPE_ACTIONS.get(archetype, "Routine monitoring")
+
+
+def top20_watchlist(risk: DataFrame, clustered_pdf, n: int = 20):
+    """Top-``n`` sellers by ``risk_score`` as a presentation-ready pandas
+    frame, with the per-seller risk ``archetype`` (from ``risk_archetypes``)
+    and a single ``recommended_action`` (see ``recommend_action``) joined on.
+
+    This is the deployable intervention short-list rendered in §6.5 and
+    mirrored on the presentation's watchlist slide: who to act on, and what
+    action — derived from the archetype, with no-backup sellers escalated.
+    """
+    # BIG-DATA-SAFETY-ESCAPE: PLOTLY_STATIC_VIZ — capped to n rows
+    top = (
+        risk.orderBy(F.col("risk_score").desc())
+        .limit(n)
+        .select(
+            "seller_id", "seller_state", "risk_score", "risk_class",
+            "demand_norm", "sentiment_norm", "network_norm",
+            "escalate_no_backup",
+        )
+        .toPandas()
+    )
+    archetype_lookup = clustered_pdf[["seller_id", "archetype"]]
+    top = top.merge(archetype_lookup, on="seller_id", how="left")
+    top["recommended_action"] = [
+        recommend_action(archetype, bool(escalate))
+        for archetype, escalate in zip(top["archetype"], top["escalate_no_backup"])
+    ]
+    return top.drop(columns=["escalate_no_backup"])
+
+
 KMEANS_SEED = 8825
 
 

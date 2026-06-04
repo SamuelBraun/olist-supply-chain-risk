@@ -1,20 +1,20 @@
 {
   "entries": {
     "convergence.kmeans_elbow": {
-      "fingerprint": "b8f034d53aa6dc9a2f932939efa1e20546224fc54a9ad4c87b54ca55c39094f8",
+      "fingerprint": "9ab7cde81db1ff16c51291ee24e83bf507e1d41803342b5d8ecd8c8bcac8473c",
       "outputs": [
         "outputs/nb6_kmeans_elbow.parquet"
       ],
       "version": 1,
-      "written_at": "2026-06-03T18:53:14"
+      "written_at": "2026-06-04T20:32:57"
     },
     "convergence.seller_risk_index": {
-      "fingerprint": "5da815bdc04fc435205ce8371a3c6e987f9e05f86275a6236bbb2eec93098bf6",
+      "fingerprint": "83c9d180ae70e4caa7557663540e56daf34d5d32168554047f26834953eb748b",
       "outputs": [
         "outputs/seller_risk_index.parquet"
       ],
       "version": 5,
-      "written_at": "2026-06-03T18:53:05"
+      "written_at": "2026-06-04T20:32:51"
     },
     "demand.fit_and_score": {
       "fingerprint": "ef24c40626ff726f15a447e3c4a81bd5e99f2a41645db7680a48495fe217b64e",
