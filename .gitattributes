@@ -1,0 +1,3 @@
+# Notebooks document the work; the Python modules carry it.
+# Keep the language bar honest about what a reader will actually read.
+*.ipynb linguist-documentation

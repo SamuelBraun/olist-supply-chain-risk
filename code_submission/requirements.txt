@@ -1,7 +1,0 @@
-# Canonical dependencies live in pyproject.toml.
-# This file installs the local `olist` package in editable mode and pulls
-# every declared dependency with it — one-shot teammate setup:
-#
-#   pip install -r requirements.txt
-#
--e .

@@ -1,7 +1,36 @@
-# This repository tracks ONLY the final code submission folder plus the
-# management presentation PDF. Everything else (working src/, notebooks/,
-# presentation sources, docs/, etc.) is kept on local disk but untracked.
-/*
-!/.gitignore
-!/code_submission/
-!/BDA_current_draft.pdf
+# Virtual environments
+.venv/
+.venv_*/
+venv/
+
+# Python
+__pycache__/
+*.py[cod]
+*.so
+
+# Jupyter
+.ipynb_checkpoints/
+
+# Secrets
+.env
+
+# Data (not redistributed)
+data/
+wikiart/
+
+# Model artefacts and caches
+models/
+outputs/models/
+*.keras
+*.h5
+*.npy
+
+# OS / editor
+.DS_Store
+.vscode/
+.idea/
+
+# Assistant tooling
+.claude/
+.CLAUDE/
+CLAUDE.md
